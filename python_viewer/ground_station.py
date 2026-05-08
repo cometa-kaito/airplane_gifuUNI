@@ -194,6 +194,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resize(1280, 800)
         self.setMinimumSize(720, 480)  # 全画面・縮小いずれも崩れない最小サイズ
 
+        # MANUAL 操作の状態
+        self.step_size = 10            # 1ボタン押下あたりの偏舵量 [deg]
+        self.current_mode_text = "?"   # 機体側から [MODE] で受け取った文字列
+
         # データバッファ
         self.history = {f: deque(maxlen=HISTORY) for f in TELEMETRY_FIELDS}
         self.history["wall_t"] = deque(maxlen=HISTORY)
@@ -246,10 +250,30 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addWidget(splitter, 1)
         self.setCentralWidget(central)
 
+        # キーボードショートカット（Quick Manual Control 用）
+        self._install_shortcuts()
+
         # 描画タイマ（30fps）
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self._refresh_plots)
         self.timer.start(33)
+
+    # ---- キーボードショートカット ----
+    def _install_shortcuts(self):
+        from PyQt6.QtGui import QKeySequence, QShortcut
+
+        sc = lambda key, fn: QShortcut(QKeySequence(key), self, activated=fn)
+        sc("Up",    self._cmd_pitch_up)
+        sc("Down",  self._cmd_pitch_dn)
+        sc("Left",  self._cmd_roll_l)
+        sc("Right", self._cmd_roll_r)
+        sc("Space", self._cmd_center)
+        # 数字キーでモード切替
+        sc("M",     lambda: self._send_and_log("manual"))
+        sc("A",     lambda: self._send_and_log("auto"))
+        sc("1",     lambda: self._send_and_log("1"))
+        sc("2",     lambda: self._send_and_log("2"))
+        sc("3",     lambda: self._send_and_log("3"))
 
     # ---- ステータス行 ----
     def _build_status_bar(self) -> QtWidgets.QWidget:
@@ -329,8 +353,101 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Expanding,
         )
-        scroll.setWidget(self._build_controls())
+
+        # 複数 GroupBox を縦に並べるコンテナ
+        container = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(container)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(8)
+
+        # 上：Quick Manual Control（プロミネント）
+        v.addWidget(self._build_quick_manual_control())
+        # 下：詳細 Control（PID ゲイン、trim、raw コマンド）
+        v.addWidget(self._build_controls())
+        v.addStretch(1)
+
+        scroll.setWidget(container)
         return scroll
+
+    # ---- Quick Manual Control （ボタンで直感操作） ----
+    def _build_quick_manual_control(self) -> QtWidgets.QWidget:
+        box = QtWidgets.QGroupBox("Quick Manual Control")
+        box.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        outer = QtWidgets.QVBoxLayout(box)
+        outer.setContentsMargins(8, 12, 8, 8)
+        outer.setSpacing(6)
+
+        # 状態表示行
+        self.lbl_quick_status = QtWidgets.QLabel("MODE: ?    Aileron R: 0°   L: 0°   Elevator: 0°")
+        self.lbl_quick_status.setStyleSheet(
+            "font-family: Consolas, monospace; font-size: 12px; "
+            "padding: 6px 8px; background: #14171c; color: #c0c8d4; border-radius: 4px;"
+        )
+        outer.addWidget(self.lbl_quick_status)
+
+        # ヒント
+        hint = QtWidgets.QLabel(
+            "MANUAL: ボタンが直接サーボを動かす  /  AUTO: PID 出力に対するトリム"
+            "    キーボード: ↑↓←→ で操舵, Space で中央, M/A でモード切替"
+        )
+        hint.setStyleSheet("color: #7a8088; font-size: 11px;")
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+
+        # ステップサイズ選択
+        step_row = QtWidgets.QHBoxLayout()
+        step_row.addWidget(QtWidgets.QLabel("Step:"))
+        self.step_btn_group = QtWidgets.QButtonGroup(self)
+        for v in [5, 10, 20]:
+            rb = QtWidgets.QRadioButton(f"{v}°")
+            rb.setChecked(v == self.step_size)
+            rb.toggled.connect(lambda checked, vv=v: checked and setattr(self, "step_size", vv))
+            self.step_btn_group.addButton(rb)
+            step_row.addWidget(rb)
+        step_row.addStretch(1)
+        outer.addLayout(step_row)
+
+        # D-pad ボタン
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(6)
+
+        def make_btn(text: str, slot, color: str = "#2c3036") -> QtWidgets.QPushButton:
+            b = QtWidgets.QPushButton(text)
+            b.setMinimumHeight(54)
+            b.setMinimumWidth(96)
+            b.setStyleSheet(
+                f"QPushButton {{ font-size: 14px; font-weight: bold; "
+                f"background: {color}; color: #f0f0f0; border-radius: 4px; }} "
+                f"QPushButton:hover {{ background: #3d434c; }} "
+                f"QPushButton:pressed {{ background: #1a1d22; }}"
+            )
+            b.clicked.connect(slot)
+            return b
+
+        btn_pitch_up = make_btn("↑\nPitch Up",   self._cmd_pitch_up)
+        btn_pitch_dn = make_btn("↓\nPitch Down", self._cmd_pitch_dn)
+        btn_roll_l   = make_btn("←\nRoll L",     self._cmd_roll_l)
+        btn_roll_r   = make_btn("→\nRoll R",     self._cmd_roll_r)
+        btn_center   = make_btn("⊙\nCenter",     self._cmd_center, color="#2b6e3a")
+
+        # D-pad layout (3x3, 中央 col=1 を使う)
+        grid.addWidget(btn_pitch_up, 0, 1)
+        grid.addWidget(btn_roll_l,   1, 0)
+        grid.addWidget(btn_center,   1, 1)
+        grid.addWidget(btn_roll_r,   1, 2)
+        grid.addWidget(btn_pitch_dn, 2, 1)
+        # 右側に余白を入れて左寄せ
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 0)
+        grid.setColumnStretch(2, 0)
+        grid.setColumnStretch(3, 1)
+
+        outer.addLayout(grid)
+        return box
 
     def _build_controls(self) -> QtWidgets.QWidget:
         ctl = QtWidgets.QGroupBox("Control")
@@ -395,6 +512,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row += 1
         ctl_layout.addWidget(QtWidgets.QLabel("Servo trim:"), row, 0)
         servo_labels = ["s0 (R aileron)", "s1 (L aileron)", "s2 (Elevator)"]
+        self.s_spins: list[QtWidgets.QDoubleSpinBox] = []
         for i in range(3):
             spin = QtWidgets.QDoubleSpinBox()
             spin.setRange(-90, 90)
@@ -411,6 +529,7 @@ class MainWindow(QtWidgets.QMainWindow):
             lbl.setMinimumWidth(60)
             ctl_layout.addWidget(lbl, row, 1 + i * 2)
             ctl_layout.addWidget(spin, row, 2 + i * 2)
+            self.s_spins.append(spin)
 
         # ---- 直接コマンド ----
         row += 1
@@ -444,9 +563,67 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_raw_send(self):
         cmd = self.txt_raw.text().strip()
         if cmd:
-            self.serial_io.send_command(cmd)
-            self.log.appendPlainText(f"> {cmd}")
+            self._send_and_log(cmd)
             self.txt_raw.clear()
+
+    # =========================================================
+    # Quick Manual Control コマンドハンドラ
+    # =========================================================
+    def _send_and_log(self, cmd: str):
+        """コマンド送信 + ログ表示"""
+        self.serial_io.send_command(cmd)
+        self.log.appendPlainText(f"> {cmd}")
+
+    def _set_servo_trim(self, idx: int, value: float):
+        """サーボ trim 値を更新（spin box にも反映 + コマンド送信）"""
+        v = max(-90.0, min(90.0, value))
+        spin = self.s_spins[idx]
+        # 既存ハンドラを誤発火させないよう block しつつ表示更新
+        spin.blockSignals(True)
+        spin.setValue(v)
+        spin.blockSignals(False)
+        self._send_and_log(f"s{idx} {int(v)}")
+
+    def _cmd_pitch_up(self):
+        cur = self.s_spins[2].value()
+        self._set_servo_trim(2, cur + self.step_size)
+        self._refresh_quick_status()
+
+    def _cmd_pitch_dn(self):
+        cur = self.s_spins[2].value()
+        self._set_servo_trim(2, cur - self.step_size)
+        self._refresh_quick_status()
+
+    def _cmd_roll_l(self):
+        # 左ロール: 右エルロン下げ (-) / 左エルロン上げ (+)
+        d = self.step_size
+        self._set_servo_trim(0, self.s_spins[0].value() - d)
+        self._set_servo_trim(1, self.s_spins[1].value() + d)
+        self._refresh_quick_status()
+
+    def _cmd_roll_r(self):
+        # 右ロール: 右エルロン上げ (+) / 左エルロン下げ (-)
+        d = self.step_size
+        self._set_servo_trim(0, self.s_spins[0].value() + d)
+        self._set_servo_trim(1, self.s_spins[1].value() - d)
+        self._refresh_quick_status()
+
+    def _cmd_center(self):
+        for i in range(3):
+            self._set_servo_trim(i, 0.0)
+        self._refresh_quick_status()
+
+    def _refresh_quick_status(self):
+        """Quick Manual Control のステータス表示を更新"""
+        if not hasattr(self, "lbl_quick_status"):
+            return
+        s0 = int(self.s_spins[0].value())
+        s1 = int(self.s_spins[1].value())
+        s2 = int(self.s_spins[2].value())
+        self.lbl_quick_status.setText(
+            f"MODE: {self.current_mode_text}    "
+            f"Aileron R: {s0:+d}°   L: {s1:+d}°   Elevator: {s2:+d}°"
+        )
 
     # ---------- データ更新 ----------
     @QtCore.pyqtSlot(dict)
@@ -467,6 +644,12 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot(str)
     def on_info(self, line: str):
         self.log.appendPlainText(line)
+        # [MODE] xxx を解析して Quick Manual Control の表示を更新
+        if line.startswith("[MODE]"):
+            tokens = line.split(maxsplit=1)
+            if len(tokens) >= 2:
+                self.current_mode_text = tokens[1].strip()
+                self._refresh_quick_status()
 
     @QtCore.pyqtSlot(bool)
     def on_link_status(self, online: bool):
