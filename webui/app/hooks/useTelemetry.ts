@@ -70,6 +70,11 @@ export function useTelemetry(url: string) {
   }, [url]);
 
   useEffect(() => {
+    if (!url) {
+      // URL 未指定時は接続せず idle のまま
+      setStatus("closed");
+      return;
+    }
     connect();
     return () => {
       if (retryRef.current !== null) {
