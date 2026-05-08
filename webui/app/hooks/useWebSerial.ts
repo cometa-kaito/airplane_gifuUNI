@@ -34,8 +34,13 @@ export function useWebSerial() {
   const writerRef = useRef<any>(null);
   const stopFlagRef = useRef(false);
 
-  const supported =
-    typeof navigator !== "undefined" && "serial" in (navigator as any);
+  // SSR 対応: 初期は false、マウント後に navigator.serial の有無を判定
+  const [supported, setSupported] = useState(false);
+  useEffect(() => {
+    if (typeof navigator !== "undefined" && "serial" in (navigator as any)) {
+      setSupported(true);
+    }
+  }, []);
 
   // ---------- 1 行をパース → ref/state へ反映（state はスロットル） ----------
   const parseLine = useCallback((line: string) => {

@@ -11,36 +11,39 @@ export function ModeSelector({
   onChange: (m: SourceMode) => void;
   webSerialSupported: boolean;
 }) {
-  const btn = (active: boolean, disabled: boolean) =>
+  const btn = (active: boolean) =>
     [
-      "px-3 py-1 rounded text-sm font-bold transition",
+      "px-3 py-1 rounded text-sm font-bold transition cursor-pointer",
       active
         ? "bg-glider-accent text-black"
         : "bg-glider-panel text-gray-300 hover:bg-gray-700",
-      disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
     ].join(" ");
 
   return (
-    <div className="flex gap-2 items-center">
+    <div className="flex gap-2 items-center flex-wrap">
       <span className="text-xs text-gray-400">Source:</span>
       <button
-        className={btn(mode === "websocket", false)}
+        className={btn(mode === "websocket")}
         onClick={() => onChange("websocket")}
       >
         WebSocket
       </button>
       <button
-        className={btn(mode === "webserial", !webSerialSupported)}
-        onClick={() => webSerialSupported && onChange("webserial")}
-        disabled={!webSerialSupported}
+        className={btn(mode === "webserial")}
+        onClick={() => onChange("webserial")}
         title={
           webSerialSupported
             ? "ブラウザから直接 USB シリアルを掴む"
-            : "Chromium 系ブラウザのみ対応"
+            : "Web Serial API 未対応ブラウザの可能性 (Chrome / Edge を推奨)"
         }
       >
         WebSerial
       </button>
+      {mode === "webserial" && !webSerialSupported && (
+        <span className="text-xs text-yellow-400">
+          ⚠ 未対応ブラウザ (Chrome / Edge を使用してください)
+        </span>
+      )}
     </div>
   );
 }
