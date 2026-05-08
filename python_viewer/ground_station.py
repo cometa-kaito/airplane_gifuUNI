@@ -192,6 +192,7 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("Glider Ground Station")
         self.resize(1280, 800)
+        self.setMinimumSize(720, 480)  # 全画面・縮小いずれも崩れない最小サイズ
 
         # データバッファ
         self.history = {f: deque(maxlen=HISTORY) for f in TELEMETRY_FIELDS}
@@ -215,28 +216,74 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Error", f"Cannot open {port}")
             sys.exit(1)
 
-    # ---------- UI ----------
+    # =========================================================
+    # UI ビルド
+    # =========================================================
     def _build_ui(self):
         central = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(central)
+        outer = QtWidgets.QVBoxLayout(central)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(6)
 
-        # === 上段: ステータス ===
-        status_row = QtWidgets.QHBoxLayout()
+        # ステータス行（固定高さ）
+        outer.addWidget(self._build_status_bar())
+
+        # 縦 Splitter で プロット / 操作 / ログ を可変分割
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(6)
+
+        splitter.addWidget(self._build_plots())
+        splitter.addWidget(self._build_controls_scroll())
+        splitter.addWidget(self._build_log())
+
+        # 初期サイズ比 (plots : controls : log = 5 : 3 : 2)
+        splitter.setStretchFactor(0, 5)
+        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(2, 2)
+        splitter.setSizes([520, 240, 120])
+
+        outer.addWidget(splitter, 1)
+        self.setCentralWidget(central)
+
+        # 描画タイマ（30fps）
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(self._refresh_plots)
+        self.timer.start(33)
+
+    # ---- ステータス行 ----
+    def _build_status_bar(self) -> QtWidgets.QWidget:
+        wrap = QtWidgets.QFrame()
+        wrap.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        wrap.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        row = QtWidgets.QHBoxLayout(wrap)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+
         self.lbl_link = QtWidgets.QLabel("LINK: ?")
         self.lbl_link.setStyleSheet("font-weight: bold; padding: 4px 8px;")
         self.lbl_rx = QtWidgets.QLabel("RX: 0  bad: 0")
         self.lbl_seq = QtWidgets.QLabel("seq: -")
         self.lbl_dt = QtWidgets.QLabel("dt: - ms")
         self.lbl_ws = QtWidgets.QLabel(f"WS: ws://localhost:{self.ws.port}")
-        for w in (self.lbl_link, self.lbl_rx, self.lbl_seq, self.lbl_dt, self.lbl_ws):
-            status_row.addWidget(w)
-        status_row.addStretch(1)
-        layout.addLayout(status_row)
 
-        # === 中段: グラフ群 ===
+        for w in (self.lbl_link, self.lbl_rx, self.lbl_seq, self.lbl_dt, self.lbl_ws):
+            row.addWidget(w)
+        row.addStretch(1)
+        return wrap
+
+    # ---- プロット群 ----
+    def _build_plots(self) -> QtWidgets.QWidget:
         pg.setConfigOptions(antialias=True, background="#1a1d22", foreground="#e0e6ed")
         plots = pg.GraphicsLayoutWidget()
-        plots.setMinimumHeight(420)
+        plots.setMinimumHeight(280)
+        plots.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
 
         self.plot_attitude = plots.addPlot(title="Attitude (deg)", row=0, col=0)
         self.plot_attitude.addLegend()
@@ -245,7 +292,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.curve_pitch = self.plot_attitude.plot(pen=pg.mkPen("#51cf66", width=2), name="pitch")
         self.curve_yaw   = self.plot_attitude.plot(pen=pg.mkPen("#4dabf7", width=2), name="yaw")
 
-        self.plot_servo = plots.addPlot(title="Servo (deg, 0-180)  D0=R Aileron / D1=L Aileron / D2=Elevator", row=0, col=1)
+        self.plot_servo = plots.addPlot(
+            title="Servo (deg, 0-180)  D0=R Aileron / D1=L Aileron / D2=Elevator",
+            row=0, col=1,
+        )
         self.plot_servo.addLegend()
         self.plot_servo.setYRange(0, 180)
         self.curve_s0 = self.plot_servo.plot(pen=pg.mkPen("#ff922b", width=2), name="s0 (R aileron)")
@@ -265,13 +315,41 @@ class MainWindow(QtWidgets.QMainWindow):
         self.curve_gy = self.plot_gyro.plot(pen=pg.mkPen("#51cf66", width=1.5), name="gy")
         self.curve_gz = self.plot_gyro.plot(pen=pg.mkPen("#4dabf7", width=1.5), name="gz")
 
-        layout.addWidget(plots, 1)
+        return plots
 
-        # === 下段: 操作パネル ===
+    # ---- 操作パネル（QScrollArea でラップ） ----
+    def _build_controls_scroll(self) -> QtWidgets.QWidget:
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setMinimumHeight(120)
+        scroll.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+        scroll.setWidget(self._build_controls())
+        return scroll
+
+    def _build_controls(self) -> QtWidgets.QWidget:
         ctl = QtWidgets.QGroupBox("Control")
+        ctl.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
         ctl_layout = QtWidgets.QGridLayout(ctl)
+        ctl_layout.setContentsMargins(8, 12, 8, 8)
+        ctl_layout.setHorizontalSpacing(6)
+        ctl_layout.setVerticalSpacing(4)
 
-        # モードボタン
+        # 列幅を一律にして、リサイズ時のがたつきを軽減
+        for col in range(7):
+            ctl_layout.setColumnStretch(col, 1)
+        # ラベル列は伸縮させない
+        ctl_layout.setColumnStretch(0, 0)
+
+        # ---- モードボタン ----
         row = 0
         ctl_layout.addWidget(QtWidgets.QLabel("Mode:"), row, 0)
         for col, (label, cmd) in enumerate([
@@ -279,18 +357,19 @@ class MainWindow(QtWidgets.QMainWindow):
             ("P", "1"), ("PD", "2"), ("PID", "3"),
         ]):
             btn = QtWidgets.QPushButton(label)
+            btn.setMinimumWidth(60)
             btn.clicked.connect(lambda _, c=cmd: self.serial_io.send_command(c))
             ctl_layout.addWidget(btn, row, col + 1)
 
-        # PID ゲインのスピンボックス（軸 x 種類）
+        # ---- PID ゲイン ヘッダー ----
         row += 1
         ctl_layout.addWidget(QtWidgets.QLabel("PID gains:"), row, 0)
-        ctl_layout.addWidget(QtWidgets.QLabel("Kp"), row, 1, 1, 1)
-        ctl_layout.addWidget(QtWidgets.QLabel("Ki"), row, 2, 1, 1)
-        ctl_layout.addWidget(QtWidgets.QLabel("Kd"), row, 3, 1, 1)
-        ctl_layout.addWidget(QtWidgets.QLabel("Target"), row, 4, 1, 1)
+        ctl_layout.addWidget(QtWidgets.QLabel("Kp"), row, 1)
+        ctl_layout.addWidget(QtWidgets.QLabel("Ki"), row, 2)
+        ctl_layout.addWidget(QtWidgets.QLabel("Kd"), row, 3)
+        ctl_layout.addWidget(QtWidgets.QLabel("Target"), row, 4)
 
-        for axis_idx, axis_name in enumerate(["roll(r)", "pitch(p)", "yaw(y)"]):
+        for axis_name in ["roll(r)", "pitch(p)", "yaw(y)"]:
             row += 1
             ctl_layout.addWidget(QtWidgets.QLabel(axis_name), row, 0)
             for col_idx, (gain, default, step, lo, hi) in enumerate([
@@ -304,6 +383,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 spin.setSingleStep(step)
                 spin.setDecimals(3)
                 spin.setValue(default)
+                spin.setMinimumWidth(70)
                 axis_letter = axis_name[0]  # r/p/y
                 spin.editingFinished.connect(
                     lambda g=gain, a=axis_letter, sp=spin:
@@ -311,9 +391,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 ctl_layout.addWidget(spin, row, col_idx + 1)
 
-        # サーボ trim
+        # ---- サーボ trim ----
         row += 1
         ctl_layout.addWidget(QtWidgets.QLabel("Servo trim:"), row, 0)
+        servo_labels = ["s0 (R aileron)", "s1 (L aileron)", "s2 (Elevator)"]
         for i in range(3):
             spin = QtWidgets.QDoubleSpinBox()
             spin.setRange(-90, 90)
@@ -321,14 +402,17 @@ class MainWindow(QtWidgets.QMainWindow):
             spin.setDecimals(0)
             spin.setValue(0)
             spin.setSuffix(" deg")
+            spin.setMinimumWidth(80)
             spin.editingFinished.connect(
                 lambda idx=i, sp=spin:
                 self.serial_io.send_command(f"s{idx} {int(sp.value())}")
             )
-            ctl_layout.addWidget(QtWidgets.QLabel(f"s{i}"), row, 1 + i * 2)
+            lbl = QtWidgets.QLabel(servo_labels[i])
+            lbl.setMinimumWidth(60)
+            ctl_layout.addWidget(lbl, row, 1 + i * 2)
             ctl_layout.addWidget(spin, row, 2 + i * 2)
 
-        # 直接コマンド
+        # ---- 直接コマンド ----
         row += 1
         ctl_layout.addWidget(QtWidgets.QLabel("Raw cmd:"), row, 0)
         self.txt_raw = QtWidgets.QLineEdit()
@@ -339,21 +423,23 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_send.clicked.connect(self._on_raw_send)
         ctl_layout.addWidget(btn_send, row, 5)
 
-        layout.addWidget(ctl)
+        return ctl
 
-        # ログ
+    # ---- ログ領域 ----
+    def _build_log(self) -> QtWidgets.QWidget:
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMaximumBlockCount(500)
-        self.log.setStyleSheet("font-family: Consolas, monospace; font-size: 11px;")
-        layout.addWidget(self.log, 0)
-
-        self.setCentralWidget(central)
-
-        # 描画タイマ（30fps）
-        self.timer = QtCore.QTimer()
-        self.timer.timeout.connect(self._refresh_plots)
-        self.timer.start(33)
+        self.log.setMaximumBlockCount(1000)
+        self.log.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+        self.log.setMinimumHeight(80)
+        self.log.setStyleSheet(
+            "QPlainTextEdit { font-family: Consolas, 'Courier New', monospace; "
+            "font-size: 11px; background: #14171c; color: #c0c8d4; }"
+        )
+        return self.log
 
     def _on_raw_send(self):
         cmd = self.txt_raw.text().strip()
