@@ -1,0 +1,83 @@
+# 自律滑空機 自作プログラム集
+
+岐阜大学 機械工学概論II「自律滑空機」プロジェクト用に作成した、機体制御プログラム・地上ビューア・ドキュメント一式です。
+
+## ディレクトリ構成
+
+```
+自作/
+├── README.md                              ← このファイル（全体案内）
+├── arduino/
+│   ├── glider_nRF52840/                   nRF52840 Sense（機体制御）
+│   │   └── glider_nRF52840.ino
+│   ├── glider_ESP32C3_aircraft/           機体側 ESP32-C3（無線中継）
+│   │   ├── glider_ESP32C3_aircraft.ino
+│   │   ├── espnow_uart_bridge.h/.cpp
+│   │   └── uart_line_protocol.h/.cpp
+│   └── glider_ESP32C3_ground/             地上側 ESP32-C3（無線中継）
+│       ├── glider_ESP32C3_ground.ino
+│       ├── espnow_uart_bridge.h/.cpp
+│       └── uart_line_protocol.h/.cpp
+├── python_viewer/
+│   ├── glider_viewer3d.py                 高機能 3D ビューア（HUD・ミニグラフ付）
+│   ├── glider_templates.py                機体形状テンプレート集
+│   ├── paperplane_glider.py               シンプル 3D 紙飛行機ビューア
+│   ├── viewer_serialsend.py               標準 2D ビューア（公式版コピー）
+│   ├── requirements.txt                   Python 依存パッケージ
+│   └── PROTOCOL_original.md               公式プロトコル仕様
+└── docs/
+    ├── HARDWARE_MAC.md                    MAC アドレス・ハードウェア構成
+    ├── WIRING.md                          配線ガイド
+    ├── COMMANDS.md                        無線コマンド一覧
+    └── SETUP.md                           環境構築手順
+```
+
+## 全体システム構成
+
+```
+[XIAO nRF52840 Sense]              [XIAO ESP32-C3 #2]              [XIAO ESP32-C3 #1]      [PC]
+  IMU + Madgwick                    Serial1 <-> ESP-NOW             ESP-NOW <-> USB         シリアルモニタ
+  3軸 PID 制御                                                                              + Python ビューア
+  サーボ D0/D1/D2
+   |
+   | Serial1 (D6 TX / D7 RX)
+   v
+  機体側 UART  ── 無線(ESP-NOW 2.4GHz) ──→  地上側 UART  ── USB ──→  PC
+```
+
+## クイックスタート
+
+### 1. Arduino IDE で 3 つのスケッチを書き込む
+- `arduino/glider_nRF52840/glider_nRF52840.ino` → nRF52840 Sense
+- `arduino/glider_ESP32C3_aircraft/glider_ESP32C3_aircraft.ino` → ESP32-C3 #2
+- `arduino/glider_ESP32C3_ground/glider_ESP32C3_ground.ino` → ESP32-C3 #1
+
+### 2. Python ビューアを起動
+```powershell
+# 仮想環境を有効化（初回のみ作成、詳細は docs/SETUP.md）
+.\.venv\Scripts\activate
+
+# 3D ビューア（高機能版）
+python python_viewer\glider_viewer3d.py --port COM12 --preset default
+
+# 標準 2D ビューア（生データ可視化）
+python python_viewer\viewer_serialsend.py --port COM12
+```
+
+## 詳細ドキュメント
+
+| ドキュメント | 内容 |
+|---|---|
+| `docs/HARDWARE_MAC.md` | 各ボードの MAC アドレス、役割分担 |
+| `docs/WIRING.md` | サーボ・Serial1 の配線 |
+| `docs/COMMANDS.md` | 無線で送れるコマンド一覧 |
+| `docs/SETUP.md` | Arduino IDE / Python 環境構築手順 |
+
+## 開発履歴サマリ
+
+- **Lesson01〜04**：LED・Serial 基礎
+- **Lesson16**：単軸 PID 制御 + IMU + サーボ
+- **example03 読解**：3軸モード管理付き機体制御
+- **Lesson12〜14**：ESP-NOW 無線通信構築（MAC 確認・1行通信・サーボ遠隔操作）
+- **Exercise05+**：3軸独立 PID + 拡張テレメトリ + 個別サーボ操作（本リポジトリ収録版）
+- **Python ビューア**：2D/3D 両方、機体テンプレート切替対応
