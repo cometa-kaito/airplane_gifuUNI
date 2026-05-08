@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useTelemetry } from "./hooks/useTelemetry";
 import { useWebSerial } from "./hooks/useWebSerial";
 import { ConnectionStatus } from "./components/ConnectionStatus";
@@ -11,26 +11,28 @@ import { AttitudeChart } from "./components/AttitudeChart";
 import { ServoChart } from "./components/ServoChart";
 import { AccelChart } from "./components/AccelChart";
 import { Glider3D } from "./components/Glider3D";
+import type { TelemetryFrame } from "./hooks/useTelemetry";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8765";
+const SNAPSHOT_INTERVAL_MS = 200; // チャート再描画頻度（=5Hz）
 
 export default function Page() {
   const [mode, setMode] = useState<SourceMode>("websocket");
 
-  // 両方のフックを常に呼び出し（rules of hooks）。アクティブでない側は idle のまま。
   const wsHook = useTelemetry(mode === "websocket" ? WS_URL : "");
   const wsSerial = useWebSerial();
 
-  // アクティブソースを選択
   const active = mode === "websocket" ? wsHook : wsSerial;
-  const { status, latest, rxCount, history } = active;
+  const { status, latest, latestRef, rxCount, history } = active;
 
-  // チャート用に history を 100ms ごとにスナップショット
-  const [snap, setSnap] = useState<typeof history.current>([]);
+  // チャート用 history スナップショット（5Hz、最後の200点だけスライス）
+  const [snap, setSnap] = useState<TelemetryFrame[]>([]);
   useEffect(() => {
     const id = window.setInterval(() => {
-      setSnap([...history.current]);
-    }, 100);
+      const all = history.current;
+      // 直近 200 点だけ渡す（uPlot は十分速いがメモリコピー量を抑えたい）
+      setSnap(all.length > 200 ? all.slice(-200) : [...all]);
+    }, SNAPSHOT_INTERVAL_MS);
     return () => window.clearInterval(id);
   }, [history]);
 
@@ -42,11 +44,13 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  const attitude = latest
-    ? { roll: latest.roll, pitch: latest.pitch, yaw: latest.yaw }
-    : { roll: 0, pitch: 0, yaw: 0 };
-
   const url = mode === "websocket" ? WS_URL : "WebSerial (USB direct)";
+
+  // active が切替わるたびに参照される最新の attitudeRef を選択
+  const attitudeRef = useMemo(
+    () => latestRef,
+    [latestRef],
+  );
 
   return (
     <main className="min-h-screen p-4 md:p-6 space-y-4">
@@ -94,7 +98,7 @@ export default function Page() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Glider3D attitude={attitude} />
+        <Glider3D attitudeRef={attitudeRef} />
         <AttitudeChart data={snap} />
         <ServoChart data={snap} />
         <AccelChart data={snap} />
@@ -108,6 +112,9 @@ export default function Page() {
         <div>
           <strong className="text-gray-400">WebSerial モード</strong>:
           ブラウザから USB を直接掴む（Chromium 系のみ、Python 不要）
+        </div>
+        <div className="text-gray-600">
+          Numerical: 20Hz / Charts: 5Hz (uPlot) / 3D: 60fps via ref (no React rerender)
         </div>
       </footer>
     </main>

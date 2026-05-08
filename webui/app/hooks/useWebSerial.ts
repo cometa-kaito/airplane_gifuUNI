@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Status, TelemetryFrame } from "./useTelemetry";
 
 const HISTORY = 300;
+const SETLATEST_THROTTLE_MS = 50;
+const SETRX_THROTTLE_MS = 100;
 
 /**
  * Web Serial API でブラウザから直接 USB シリアルを掴む。
@@ -20,6 +22,12 @@ export function useWebSerial() {
   const [rxCount, setRxCount] = useState(0);
   const historyRef = useRef<TelemetryFrame[]>([]);
 
+  // 常時更新の ref（再レンダ無し）
+  const latestRef = useRef<TelemetryFrame | null>(null);
+  const rxCounterRef = useRef(0);
+  const lastSetLatest = useRef(0);
+  const lastSetRx = useRef(0);
+
   // ブラウザ API ハンドル
   const portRef = useRef<any>(null);
   const readerRef = useRef<any>(null);
@@ -29,10 +37,10 @@ export function useWebSerial() {
   const supported =
     typeof navigator !== "undefined" && "serial" in (navigator as any);
 
-  // ---------- 1 行をパースして状態へ反映 ----------
+  // ---------- 1 行をパース → ref/state へ反映（state はスロットル） ----------
   const parseLine = useCallback((line: string) => {
     if (!line) return;
-    if (line.startsWith("[") || line.startsWith("#")) return; // info / debug
+    if (line.startsWith("[") || line.startsWith("#")) return;
     const parts = line.split(",");
     if (parts.length !== 15) return;
     const n = parts.map((p) => Number(p));
@@ -47,11 +55,21 @@ export function useWebSerial() {
       wall_ms: Date.now(),
     };
 
+    latestRef.current = frame;
     const arr = historyRef.current;
     arr.push(frame);
     if (arr.length > HISTORY) arr.splice(0, arr.length - HISTORY);
-    setLatest(frame);
-    setRxCount((c) => c + 1);
+    rxCounterRef.current++;
+
+    const now = performance.now();
+    if (now - lastSetLatest.current >= SETLATEST_THROTTLE_MS) {
+      lastSetLatest.current = now;
+      setLatest(frame);
+    }
+    if (now - lastSetRx.current >= SETRX_THROTTLE_MS) {
+      lastSetRx.current = now;
+      setRxCount(rxCounterRef.current);
+    }
   }, []);
 
   // ---------- 受信ループ ----------
@@ -143,6 +161,7 @@ export function useWebSerial() {
   return {
     status,
     latest,
+    latestRef,
     rxCount,
     history: historyRef,
     supported,
