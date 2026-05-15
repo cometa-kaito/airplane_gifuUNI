@@ -101,12 +101,40 @@ Step 1  Calibration        機体を水平に置いて Zero Now
 Step 2  Safety             姿勢角しきい値 + Failsafe を設定
 Step 3  Trim & Mode        D-Pad / 矢印キーで MANUAL トリム調整
 Step 4  PID Gains          Soft / Default / Responsive プリセット or 個別調整
-Step 5  Launch             投擲検知を Arm → 機体を投げる
+Step 5  Launch             Phase Machine を Arm → 機体を投げる
 ```
 
-Step 5 で `arm` を送ると、機体は **MANUAL ホールドのまま投擲を待ち、|a|>launch_g を連続検出した時点で AUTO/PID へ自動遷移** します。投擲後 500ms は PID 出力をゼロホールド（Madgwick が高G ショックから復帰する猶予）し、その後 PID 制御を開始します。
+### Flight Phase Machine (Step 5)
 
-**armed 中は failsafe を抑制**するため、地上局との接続が落ちても飛行を継続できます（自律滑空中に地上局と離れる前提）。tilt safeguard と WDT は引き続き有効。
+機体側ファームウェアには `docs/CONTROL_STRATEGY_REPORT.md` の P0-1/P0-2 方針に従ったフェーズマシンを実装してあります:
+
+```
+DISARMED → (arm) → PRELAUNCH → (|a|>launch_g) → LAUNCH (climb-out)
+                                              → (climb_ms 経過) → GLIDE
+                                              → (|az|<landed_g 持続) → LANDED → (disarm) → DISARMED
+```
+
+| Phase | 制御 | 目標 pitch | サーボ |
+|---|---|---|---|
+| DISARMED / PRELAUNCH | MANUAL | - | trim |
+| LAUNCH (初頭 500ms) | PID ゼロホールド | - | trim + climb_ff |
+| LAUNCH (残り) | AUTO/PID | climb_pitch (+15°) | PID 出力 + climb_ff |
+| GLIDE | AUTO/PID | glide_pitch (+3°) | PID 出力 |
+| LANDED | MANUAL + trim=0 | - | 中立 |
+
+- **armed 中 (DISARMED 以外) は failsafe 抑制** — 地上局接続が落ちても飛行を継続できます。
+- **LAUNCH 直後の 500ms は PID 出力ゼロホールド** — Madgwick が投擲ショックから復帰する猶予。
+- **LAUNCH 中のエレベータ feed-forward** — `climb_ff` (既定 +5°) を加算し機首上げを補助。
+- **LANDED 自動検出** — `|az|<landed_g` が `landed_ms` 連続したらサーボ中立で停止。
+
+### D 項のソース (P0-3)
+
+`d_source` コマンドで切替可能:
+
+- `d_source gyro` (**既定**) — ジャイロ生値を直接 D 項に使う (Lesson17 推奨方式)。Madgwick の積分出力を経由しない分、位相遅れとノイズ増幅が小さい。`dfilter` 不要。
+- `d_source error` — 従来の `(e - prevE)/dt + dfilter LPF`。後方互換用。
+
+ジャイロ直接モードでは Kd の単位が同じ deg/s のままなので、既存ゲインから始めて微調整可能。
 
 ## 開発履歴サマリ
 

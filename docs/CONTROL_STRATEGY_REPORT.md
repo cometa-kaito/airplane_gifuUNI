@@ -7,7 +7,27 @@
 | 機体仕様 | XIAO nRF52840 Sense + LSM6DS3 (6軸IMU) + ESP32-C3 + EMax ES9051/ES9251-2 サーボ + Lipo |
 | 飛行方式 | ゴム射出台から発射し、最遠到達距離を競う（PDF p.2 参照） |
 | 機体構成 | エルロン2枚 (D0=右 / D1=左) + エレベータ (D2)。ラダー無し |
-| 報告日 | 2026-05-15 |
+| 報告日 | 2026-05-15 (初稿) / 2026-05-15 改善実装 |
+
+## 実装ステータス (2026-05-15)
+
+| 優先度 | 項目 | 状態 | 該当コミット範囲 |
+|---|---|---|---|
+| 🔴 P0-1 | 射出検出 + フェーズマシン | ✅ 実装済 | Flight Phase Machine (DISARMED/PRELAUNCH/LAUNCH/GLIDE/LANDED) を `glider_nRF52840.ino` に追加 |
+| 🔴 P0-2 | PID 目標の動的化と feed-forward | ✅ 実装済 | `currentTargetPitch()` で phase 依存目標、`climb_ff` でエレベータ feed-forward |
+| 🔴 P0-3 | D 項にジャイロを直接使う | ✅ 実装済 | `d_source gyro` (既定) / `error` (互換) を `dSource` で切替 |
+| 🟠 P1-1 | 制御ループ周期を 100Hz に | ⏸ 保留 | dt 整合・テレメトリ帯域の検証が必要、競技後の課題に |
+| 🟠 P1-2 | Madgwick beta=0.033 | 📝 TODO | `MadgwickAHRS` ライブラリの beta が private のため設定不可。Adafruit_AHRS への置換 or ライブラリパッチが将来課題 (firmware にコメント残し) |
+| 🟠 P1-3 | 積分項リミットの物理化 | ✅ 実装済 | `integralLimit` を 200 → 50 に縮小 |
+| 🟠 P1-4 | zero キャリブの NVS 保存 | ⏸ 保留 | フィールドで毎回 zero を打つ手間あり。InternalFS 連携は将来課題 |
+| 🟡 P2-1 | テレメトリに PID 内部状態追加 | 🟦 部分実装 | `phase` と `accel_g` を 16/17 列目に追加。PID 個別成分は次回 |
+| 🟡 P2-2 | 地上局でフライト自動ロギング | ✅ 実装済 | `ground_station.py` 起動と同時に `logs/flight_*.csv` へ自動保存 (--no-log で無効化可) |
+| 🟡 P2-3 | ステップ応答 + Z-N 自動チューニング | ⏸ 保留 | UI に Step Response 取得ボタンを追加する案、競技直前の余力次第 |
+| 🟡 P2-4 | WebUI / PyQt の役割分離 | 📝 README で明示 | 機能は両者で並行運用、README で「PyQt = 主力、WebUI = 並行/解析」を明記済 |
+| 🟡 P2-5 | yaw を不確か表示 | ⏸ 保留 | 競技に影響しないため後回し |
+| 🟢 P3 | カスケード PID / ピトー / モデル同定 | ⏸ 保留 | 競技後の発展テーマ |
+
+**現時点の到達点**: 「単発射出グライダーとしてのフェーズ自動切替」「PID 部品の質的改善」「ロガー確実化」を達成。次の試験飛行で投擲しきい値・climb_pitch・glide_pitch・Kd の実機チューニング段階に入れる。
 
 ---
 
