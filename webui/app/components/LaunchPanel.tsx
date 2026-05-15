@@ -39,7 +39,7 @@ const DEFAULTS: StoredParams = {
   climb_ff: 5,
   glide_pitch: 3,
   landed_g: 0.15,           // 新セマンティクスでの既定（旧 0.3 を更新）
-  landed_gyro: 5,
+  landed_gyro: 15,          // LSM6DS3 のバイアス+ノイズを呑み込める実用値 (旧 5 だと机置きで未発火)
   landed_ms: 1000,
   glide_timeout: 20000,
 };

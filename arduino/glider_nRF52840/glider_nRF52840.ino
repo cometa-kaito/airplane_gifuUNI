@@ -190,7 +190,10 @@ float climbElevatorFF = 5.0f;               // LAUNCH 中のエレベータ feed
 //   旧版は |az|<0.3 (自由落下を想定) だったが、机に置いた状態の az≈1g で発火せず、
 //   GLIDE から戻れなくなるバグだった。
 float landedAzG = 0.15f;                    // ||a|-1.0g| がこれ未満 = 重力のみ作用中 [g]
-float landedGyroMax = 5.0f;                 // max(|gx|,|gy|,|gz|) がこれ未満 = 停止 [deg/s]
+// LSM6DS3 はキャリブ無しで gyro bias ±2〜10°/s + ノイズ RMS 3〜5°/s が乗るため、
+// 5°/s だと机置きでも条件が連続成立しない (実機ベンチテストで確認)。15°/s に緩めた。
+// バイアスが大きい個体や振動環境では 20〜30°/s まで上げてもよい (UI から調整可)。
+float landedGyroMax = 15.0f;                // max(|gx|,|gy|,|gz|) がこれ未満 = 停止 [deg/s]
 uint32_t landedHoldMs = 1000;               // 上記両条件が連続成立する必要時間 [ms]
 uint32_t glideTimeoutMs = 20000;            // GLIDE 持続の上限。経過したら強制 LANDED (0 で無効) [ms]
 const uint8_t LAUNCH_TRIGGER_FRAMES = 2;    // 連続超過フレーム数 (~62ms @30Hz)
@@ -446,7 +449,7 @@ static void printHelp() {
   radioPrintln("[INFO]   glide_pitch <deg>    GLIDE target pitch (default +3)");
   radioPrintln("[INFO]   climb_ff <deg>       LAUNCH elevator feed-forward (default +5)");
   radioPrintln("[INFO]   landed_g <g>         ||a|-1g| below this = still (default 0.15)");
-  radioPrintln("[INFO]   landed_gyro <deg/s>  max gyro below this = still (default 5)");
+  radioPrintln("[INFO]   landed_gyro <deg/s>  max gyro below this = still (default 15)");
   radioPrintln("[INFO]   landed_ms <ms>       both conditions sustained for this = LANDED (default 1000)");
   radioPrintln("[INFO]   glide_timeout <ms>   hard timeout from GLIDE to LANDED (default 20000, 0 disables)");
   radioPrintln("[INFO]   d_source <gyro|err>  D-term source: gyro (default) or err (legacy)");

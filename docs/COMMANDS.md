@@ -81,7 +81,7 @@
 | `climb_ff <deg>` | LAUNCH 中のエレベータ feed-forward 加算。既定 +5°、範囲 -30..30 |
 | `glide_pitch <deg>` | GLIDE 中の目標 pitch（最良滑空）。既定 +3°、範囲 -20..30 |
 | `landed_g <g>` | **`||a|-1g|`** がこの値未満 = 重力のみ作用 = 静置と判定。既定 **0.15**、範囲 0..1。**※ v17 で意味変更**: 旧 firmware は `|az|<th` (自由落下) だったが、机置きで発火しないバグだったため修正 |
-| `landed_gyro <°/s>` | `max(|gx|,|gy|,|gz|)` がこの値未満 = 停止していると判定。既定 5.0、範囲 0..200 |
+| `landed_gyro <°/s>` | `max(|gx|,|gy|,|gz|)` がこの値未満 = 停止していると判定。既定 **15.0**、範囲 0..200。LSM6DS3 はキャリブ無しで bias+noise が 5〜15°/s 程度乗るので、5 だと机置きでも発火しない |
 | `landed_ms <ms>` | `landed_g` と `landed_gyro` の両方が連続成立する必要時間 [ms]。既定 1000、範囲 100..10000 |
 | `glide_timeout <ms>` | GLIDE 持続のハードタイムアウト [ms]。これを超えたら強制 LANDED。既定 20000、`0` で無効 |
 | `d_source <gyro\|error>` | D 項の計算ソース。**既定 gyro**（Lesson17 推奨。ジャイロ生値を直接使用）。`error` で従来の `(e-prevE)/dt + dfilter` に戻る |
