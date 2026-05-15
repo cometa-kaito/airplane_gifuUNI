@@ -10,14 +10,25 @@ const DISPLAY_POINTS = 200;
 const baseOptions: Omit<Options, "width" | "height"> = {
   scales: { y: { auto: false, range: [-180, 180] } },
   axes: [
-    { stroke: "#7a8088", grid: { stroke: "#2a2f37", width: 1 }, ticks: { stroke: "#7a8088" } },
-    { stroke: "#7a8088", grid: { stroke: "#2a2f37", width: 1 }, ticks: { stroke: "#7a8088" } },
+    {
+      stroke: "#64748b",
+      grid: { stroke: "#1a212d", width: 1 },
+      ticks: { stroke: "#475569", size: 4 },
+      font: '11px "JetBrains Mono", monospace',
+    },
+    {
+      stroke: "#64748b",
+      grid: { stroke: "#1a212d", width: 1 },
+      ticks: { stroke: "#475569", size: 4 },
+      font: '11px "JetBrains Mono", monospace',
+      size: 44,
+    },
   ],
   series: [
     {},
-    { label: "roll",  stroke: "#ff6b6b", width: 1.5 },
-    { label: "pitch", stroke: "#51cf66", width: 1.5 },
-    { label: "yaw",   stroke: "#4dabf7", width: 1.5 },
+    { label: "roll",  stroke: "#ff5d6c", width: 1.75 },
+    { label: "pitch", stroke: "#3ddc97", width: 1.75 },
+    { label: "yaw",   stroke: "#5cc8ff", width: 1.75 },
   ],
   legend: { show: true },
   cursor: { drag: { setScale: false } },
@@ -40,9 +51,23 @@ function AttitudeChartImpl({ data }: { data: TelemetryFrame[] }) {
   }, [data]);
 
   return (
-    <div className="bg-glider-panel rounded p-3">
-      <div className="text-xs text-gray-400 mb-1">Attitude (deg)</div>
-      <UPlotChart options={baseOptions} data={aligned} height={220} />
+    <div className="card-pad">
+      <div className="flex items-center justify-between mb-2">
+        <div className="section-title">Attitude</div>
+        <div className="flex items-center gap-3 text-[10px] font-mono">
+          <span className="flex items-center gap-1 text-glider-roll">
+            <i className="inline-block w-2 h-2 rounded-sm bg-glider-roll" /> roll
+          </span>
+          <span className="flex items-center gap-1 text-glider-pitch">
+            <i className="inline-block w-2 h-2 rounded-sm bg-glider-pitch" /> pitch
+          </span>
+          <span className="flex items-center gap-1 text-glider-yaw">
+            <i className="inline-block w-2 h-2 rounded-sm bg-glider-yaw" /> yaw
+          </span>
+          <span className="text-glider-textMute">±180°</span>
+        </div>
+      </div>
+      <UPlotChart options={baseOptions} data={aligned} height={210} />
     </div>
   );
 }

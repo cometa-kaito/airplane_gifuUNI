@@ -4,12 +4,83 @@
 
 html,
 body {
-  background: #0f1419;
-  color: #e0e6ed;
+  background: #060912;
+  color: #f1f5f9;
   height: 100%;
 }
 
 body {
   margin: 0;
-  font-family: "Inter", "Noto Sans JP", sans-serif;
+  font-family: "Inter", "Noto Sans JP", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% -10%, rgba(56, 189, 248, 0.07), transparent 60%),
+    radial-gradient(ellipse 70% 50% at 100% 100%, rgba(168, 85, 247, 0.05), transparent 60%),
+    #060912;
+  background-attachment: fixed;
 }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #2e3849;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #3b4759; background-clip: content-box; }
+
+@layer components {
+  .card {
+    @apply bg-gradient-to-b from-glider-panel to-glider-surface
+           border border-glider-border rounded-xl shadow-card;
+  }
+  .card-tight { @apply card p-3; }
+  .card-pad   { @apply card p-4; }
+
+  .section-title {
+    @apply text-[10px] uppercase tracking-[0.18em] font-semibold text-glider-textDim;
+  }
+
+  .stat-label {
+    @apply text-[10px] uppercase tracking-wider font-medium text-glider-textMute;
+  }
+
+  .stat-val {
+    @apply font-mono tabular-nums;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5
+           px-3 py-1.5 rounded-md text-sm font-semibold
+           transition-all duration-150 select-none
+           disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-glider-accent text-black hover:brightness-110 active:brightness-95;
+  }
+  .btn-danger {
+    @apply btn bg-glider-err text-white hover:brightness-110 active:brightness-95;
+  }
+  .btn-ghost {
+    @apply btn bg-glider-panel border border-glider-border
+           text-glider-text hover:bg-glider-panelHi hover:border-glider-borderHi;
+  }
+
+  .tab {
+    @apply btn-ghost text-xs;
+  }
+  .tab-active {
+    @apply bg-glider-accent text-black border-glider-accent
+           shadow-[0_0_18px_rgba(56,189,248,0.25)] hover:brightness-110;
+  }
+}
+
+/* Style uPlot to match dark theme */
+.uplot, .u-wrap { color: #94a3b8 !important; }
+.u-legend { font-size: 11px !important; font-family: "JetBrains Mono", "Consolas", monospace !important; }
+.u-legend .u-marker { width: 10px !important; height: 10px !important; border-radius: 2px !important; }
+.u-legend .u-label { color: #cbd5e1 !important; }
+.u-legend .u-value { color: #f1f5f9 !important; font-weight: 600 !important; }
+.u-cursor-pt { background: rgba(56, 189, 248, 0.9) !important; }

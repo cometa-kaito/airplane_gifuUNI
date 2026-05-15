@@ -1,56 +1,134 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+import type { MutableRefObject } from "react";
 import type { TelemetryFrame } from "../hooks/useTelemetry";
 
-function Cell({
-  label,
-  value,
-  unit,
-  color,
-}: {
+type CellSpec = {
+  k: keyof TelemetryFrame;
   label: string;
-  value: string;
   unit?: string;
+  decimals?: number;
   color?: string;
+  warnAbs?: number; // 絶対値がこれを超えると警告色
+};
+
+const IMU_CELLS: CellSpec[] = [
+  { k: "ax", label: "AX", unit: "g",     decimals: 3, color: "#ff5d6c", warnAbs: 1.5 },
+  { k: "ay", label: "AY", unit: "g",     decimals: 3, color: "#3ddc97", warnAbs: 1.5 },
+  { k: "az", label: "AZ", unit: "g",     decimals: 3, color: "#5cc8ff", warnAbs: 1.5 },
+  { k: "gx", label: "GX", unit: "°/s",   decimals: 1, color: "#ff5d6c", warnAbs: 250 },
+  { k: "gy", label: "GY", unit: "°/s",   decimals: 1, color: "#3ddc97", warnAbs: 250 },
+  { k: "gz", label: "GZ", unit: "°/s",   decimals: 1, color: "#5cc8ff", warnAbs: 250 },
+];
+
+const SYS_CELLS: CellSpec[] = [
+  { k: "seq",    label: "SEQ",     decimals: 0 },
+  { k: "t_ms",   label: "T",       unit: "ms",  decimals: 0 },
+  { k: "dt_ms",  label: "DT",      unit: "ms",  decimals: 0, warnAbs: 50 },
+  { k: "wall_ms", label: "WALL",   unit: "ms",  decimals: 0 },
+];
+
+function MiniCell({
+  spec,
+  textRef,
+}: {
+  spec: CellSpec;
+  textRef: (el: HTMLSpanElement | null) => void;
 }) {
   return (
-    <div className="bg-glider-panel rounded p-3 flex flex-col">
-      <div className="text-xs text-gray-400">{label}</div>
-      <div className={`text-2xl font-mono ${color ?? "text-white"}`}>
-        {value}
-        {unit && <span className="text-sm text-gray-500 ml-1">{unit}</span>}
+    <div className="bg-glider-surface border border-glider-border rounded-md px-2.5 py-1.5 flex flex-col items-start min-w-0">
+      <span
+        className="stat-label"
+        style={spec.color ? { color: spec.color } : undefined}
+      >
+        {spec.label}
+      </span>
+      <div className="flex items-baseline gap-1 min-w-0 w-full">
+        <span
+          ref={textRef}
+          className="stat-val text-base font-semibold truncate"
+          style={{ color: spec.color ?? "#f1f5f9" }}
+        >
+          --
+        </span>
+        {spec.unit && (
+          <span className="text-[10px] text-glider-textMute font-mono">
+            {spec.unit}
+          </span>
+        )}
       </div>
     </div>
   );
 }
 
-export function TelemetryPanel({ frame }: { frame: TelemetryFrame | null }) {
-  const fmt = (v: number | undefined, dec = 2) =>
-    v === undefined ? "--" : v.toFixed(dec);
-  const fmtInt = (v: number | undefined) =>
-    v === undefined ? "--" : String(v);
+function format(v: number | undefined, dec: number | undefined) {
+  if (v === undefined || !Number.isFinite(v)) return "--";
+  return v.toFixed(dec ?? 2);
+}
+
+function CellGroup({
+  title,
+  cells,
+  attitudeRef,
+}: {
+  title: string;
+  cells: CellSpec[];
+  attitudeRef: MutableRefObject<TelemetryFrame | null>;
+}) {
+  const refs = useRef<Record<string, HTMLSpanElement | null>>({});
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const tick = () => {
+      const f = attitudeRef.current;
+      if (f) {
+        for (const c of cells) {
+          const el = refs.current[c.k as string];
+          if (!el) continue;
+          const v = f[c.k] as number;
+          el.textContent = format(v, c.decimals);
+          if (c.warnAbs !== undefined) {
+            const warn = Math.abs(v) > c.warnAbs;
+            el.style.color = warn ? "#f59e0b" : c.color ?? "#f1f5f9";
+          }
+        }
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    };
+  }, [attitudeRef, cells]);
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-      <Cell label="roll" value={fmt(frame?.roll)} unit="deg" color="text-glider-roll" />
-      <Cell label="pitch" value={fmt(frame?.pitch)} unit="deg" color="text-glider-pitch" />
-      <Cell label="yaw" value={fmt(frame?.yaw)} unit="deg" color="text-glider-yaw" />
-      <Cell label="seq" value={fmtInt(frame?.seq)} />
+    <div className="card-pad">
+      <div className="section-title mb-2">{title}</div>
+      <div className="grid grid-cols-3 gap-1.5">
+        {cells.map((c) => (
+          <MiniCell
+            key={c.k as string}
+            spec={c}
+            textRef={(el) => {
+              refs.current[c.k as string] = el;
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
 
-      <Cell label="ax" value={fmt(frame?.ax, 3)} unit="g" />
-      <Cell label="ay" value={fmt(frame?.ay, 3)} unit="g" />
-      <Cell label="az" value={fmt(frame?.az, 3)} unit="g" />
-      <Cell label="dt" value={fmtInt(frame?.dt_ms)} unit="ms" />
-
-      <Cell label="gx" value={fmt(frame?.gx)} unit="deg/s" />
-      <Cell label="gy" value={fmt(frame?.gy)} unit="deg/s" />
-      <Cell label="gz" value={fmt(frame?.gz)} unit="deg/s" />
-      <Cell label="t_ms" value={fmtInt(frame?.t_ms)} unit="ms" />
-
-      <Cell label="s0" value={fmtInt(frame?.s0)} unit="deg" color="text-glider-servo0" />
-      <Cell label="s1" value={fmtInt(frame?.s1)} unit="deg" color="text-glider-servo1" />
-      <Cell label="s2" value={fmtInt(frame?.s2)} unit="deg" color="text-glider-servo2" />
-      <Cell label="wall" value={fmtInt(frame?.wall_ms)} unit="ms" />
+export function TelemetryPanel({
+  attitudeRef,
+}: {
+  attitudeRef: MutableRefObject<TelemetryFrame | null>;
+}) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <CellGroup title="IMU — Accel & Gyro" cells={IMU_CELLS} attitudeRef={attitudeRef} />
+      <CellGroup title="System" cells={SYS_CELLS} attitudeRef={attitudeRef} />
     </div>
   );
 }

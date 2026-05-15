@@ -11,39 +11,38 @@ export function ModeSelector({
   onChange: (m: SourceMode) => void;
   webSerialSupported: boolean;
 }) {
-  const btn = (active: boolean) =>
-    [
-      "px-3 py-1 rounded text-sm font-bold transition cursor-pointer",
-      active
-        ? "bg-glider-accent text-black"
-        : "bg-glider-panel text-gray-300 hover:bg-gray-700",
-    ].join(" ");
-
   return (
-    <div className="flex gap-2 items-center flex-wrap">
-      <span className="text-xs text-gray-400">Source:</span>
-      <button
-        className={btn(mode === "websocket")}
-        onClick={() => onChange("websocket")}
+    <div className="flex flex-col gap-1">
+      <span className="section-title">Source</span>
+      <div
+        className="inline-flex p-1 bg-glider-surface border border-glider-border rounded-lg"
+        role="tablist"
       >
-        WebSocket
-      </button>
-      <button
-        className={btn(mode === "webserial")}
-        onClick={() => onChange("webserial")}
-        title={
-          webSerialSupported
-            ? "ブラウザから直接 USB シリアルを掴む"
-            : "Web Serial API 未対応ブラウザの可能性 (Chrome / Edge を推奨)"
-        }
-      >
-        WebSerial
-      </button>
-      {mode === "webserial" && !webSerialSupported && (
-        <span className="text-xs text-yellow-400">
-          ⚠ 未対応ブラウザ (Chrome / Edge を使用してください)
-        </span>
-      )}
+        <button
+          role="tab"
+          aria-selected={mode === "websocket"}
+          className={`tab ${mode === "websocket" ? "tab-active" : ""}`}
+          onClick={() => onChange("websocket")}
+        >
+          WebSocket
+        </button>
+        <button
+          role="tab"
+          aria-selected={mode === "webserial"}
+          className={`tab ${mode === "webserial" ? "tab-active" : ""}`}
+          onClick={() => onChange("webserial")}
+          title={
+            webSerialSupported
+              ? "ブラウザから直接 USB シリアルを掴む"
+              : "Web Serial API 未対応ブラウザの可能性 (Chrome / Edge を推奨)"
+          }
+        >
+          WebSerial
+          {!webSerialSupported && (
+            <span className="ml-1 text-glider-warn" title="未対応ブラウザ">⚠</span>
+          )}
+        </button>
+      </div>
     </div>
   );
 }

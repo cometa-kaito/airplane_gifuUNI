@@ -10,14 +10,25 @@ const DISPLAY_POINTS = 200;
 const baseOptions: Omit<Options, "width" | "height"> = {
   scales: { y: { auto: false, range: [0, 180] } },
   axes: [
-    { stroke: "#7a8088", grid: { stroke: "#2a2f37", width: 1 }, ticks: { stroke: "#7a8088" } },
-    { stroke: "#7a8088", grid: { stroke: "#2a2f37", width: 1 }, ticks: { stroke: "#7a8088" } },
+    {
+      stroke: "#64748b",
+      grid: { stroke: "#1a212d", width: 1 },
+      ticks: { stroke: "#475569", size: 4 },
+      font: '11px "JetBrains Mono", monospace',
+    },
+    {
+      stroke: "#64748b",
+      grid: { stroke: "#1a212d", width: 1 },
+      ticks: { stroke: "#475569", size: 4 },
+      font: '11px "JetBrains Mono", monospace',
+      size: 44,
+    },
   ],
   series: [
     {},
-    { label: "s0 (R aileron)", stroke: "#ff922b", width: 1.5 },
-    { label: "s1 (L aileron)", stroke: "#ffd43b", width: 1.5 },
-    { label: "s2 (Elevator)",  stroke: "#a9e34b", width: 1.5 },
+    { label: "s0 R-aileron", stroke: "#ff922b", width: 1.75 },
+    { label: "s1 L-aileron", stroke: "#ffd43b", width: 1.75 },
+    { label: "s2 elevator",  stroke: "#a9e34b", width: 1.75 },
   ],
   legend: { show: true },
   cursor: { drag: { setScale: false } },
@@ -40,9 +51,23 @@ function ServoChartImpl({ data }: { data: TelemetryFrame[] }) {
   }, [data]);
 
   return (
-    <div className="bg-glider-panel rounded p-3">
-      <div className="text-xs text-gray-400 mb-1">Servo (deg, 0-180)</div>
-      <UPlotChart options={baseOptions} data={aligned} height={220} />
+    <div className="card-pad">
+      <div className="flex items-center justify-between mb-2">
+        <div className="section-title">Servo</div>
+        <div className="flex items-center gap-3 text-[10px] font-mono">
+          <span className="flex items-center gap-1 text-glider-servo0">
+            <i className="inline-block w-2 h-2 rounded-sm bg-glider-servo0" /> s0
+          </span>
+          <span className="flex items-center gap-1 text-glider-servo1">
+            <i className="inline-block w-2 h-2 rounded-sm bg-glider-servo1" /> s1
+          </span>
+          <span className="flex items-center gap-1 text-glider-servo2">
+            <i className="inline-block w-2 h-2 rounded-sm bg-glider-servo2" /> s2
+          </span>
+          <span className="text-glider-textMute">0 – 180°</span>
+        </div>
+      </div>
+      <UPlotChart options={baseOptions} data={aligned} height={210} />
     </div>
   );
 }
