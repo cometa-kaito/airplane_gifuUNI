@@ -12,23 +12,23 @@ const baseOptions: Omit<Options, "width" | "height"> = {
   axes: [
     {
       stroke: "#64748b",
-      grid: { stroke: "#1a212d", width: 1 },
-      ticks: { stroke: "#475569", size: 4 },
+      grid: { stroke: "#f1f5f9", width: 1 },  // slate-100
+      ticks: { stroke: "#cbd5e1", size: 4 },  // slate-300
       font: '11px "JetBrains Mono", monospace',
     },
     {
       stroke: "#64748b",
-      grid: { stroke: "#1a212d", width: 1 },
-      ticks: { stroke: "#475569", size: 4 },
+      grid: { stroke: "#f1f5f9", width: 1 },
+      ticks: { stroke: "#cbd5e1", size: 4 },
       font: '11px "JetBrains Mono", monospace',
       size: 44,
     },
   ],
   series: [
     {},
-    { label: "roll",  stroke: "#ff5d6c", width: 1.75 },
-    { label: "pitch", stroke: "#3ddc97", width: 1.75 },
-    { label: "yaw",   stroke: "#5cc8ff", width: 1.75 },
+    { label: "roll",  stroke: "#e11d48", width: 1.75 },  // rose-600
+    { label: "pitch", stroke: "#059669", width: 1.75 },  // emerald-600
+    { label: "yaw",   stroke: "#0284c7", width: 1.75 },  // sky-600
   ],
   legend: { show: true },
   cursor: { drag: { setScale: false } },

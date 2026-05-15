@@ -12,23 +12,23 @@ const baseOptions: Omit<Options, "width" | "height"> = {
   axes: [
     {
       stroke: "#64748b",
-      grid: { stroke: "#1a212d", width: 1 },
-      ticks: { stroke: "#475569", size: 4 },
+      grid: { stroke: "#f1f5f9", width: 1 },
+      ticks: { stroke: "#cbd5e1", size: 4 },
       font: '11px "JetBrains Mono", monospace',
     },
     {
       stroke: "#64748b",
-      grid: { stroke: "#1a212d", width: 1 },
-      ticks: { stroke: "#475569", size: 4 },
+      grid: { stroke: "#f1f5f9", width: 1 },
+      ticks: { stroke: "#cbd5e1", size: 4 },
       font: '11px "JetBrains Mono", monospace',
       size: 44,
     },
   ],
   series: [
     {},
-    { label: "s0 R-aileron", stroke: "#ff922b", width: 1.75 },
-    { label: "s1 L-aileron", stroke: "#ffd43b", width: 1.75 },
-    { label: "s2 elevator",  stroke: "#a9e34b", width: 1.75 },
+    { label: "s0 R-aileron", stroke: "#ea580c", width: 1.75 },  // orange-600
+    { label: "s1 L-aileron", stroke: "#ca8a04", width: 1.75 },  // yellow-600
+    { label: "s2 elevator",  stroke: "#65a30d", width: 1.75 },  // lime-600
   ],
   legend: { show: true },
   cursor: { drag: { setScale: false } },

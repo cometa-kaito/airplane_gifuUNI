@@ -5,27 +5,28 @@ import type { MutableRefObject } from "react";
 import type { TelemetryFrame } from "../hooks/useTelemetry";
 
 /**
- * 大きな姿勢角ヒーロー表示。
- * 60fps の RAF ループで ref を直接読み、DOM の textContent と
- * SVG ゲージの strokeDasharray だけ書き換える。再レンダなしで滑らかに動く。
+ * AttitudeHero — Roll / Pitch / Yaw を大きく表示するヒーローカード。
+ * モダンライトテーマ: 真っ黒は避けて slate-800、アクセントは軸ごとの識別色のみ。
+ * 60fps の RAF ループで ref を直接更新 (再レンダ無し)。
  */
 type Axis = {
   key: "roll" | "pitch" | "yaw";
   label: string;
   jp: string;
   color: string;
+  bg: string;       // 軸ごとの薄い背景アクセント
   range: [number, number];
 };
 
 const AXES: Axis[] = [
-  { key: "roll",  label: "ROLL",  jp: "ロール",  color: "#ff5d6c", range: [-180, 180] },
-  { key: "pitch", label: "PITCH", jp: "ピッチ",  color: "#3ddc97", range: [-180, 180] },
-  { key: "yaw",   label: "YAW",   jp: "ヨー",    color: "#5cc8ff", range: [-180, 180] },
+  { key: "roll",  label: "ROLL",  jp: "ロール",  color: "#e11d48", bg: "#fff1f2", range: [-180, 180] },
+  { key: "pitch", label: "PITCH", jp: "ピッチ",  color: "#059669", bg: "#ecfdf5", range: [-180, 180] },
+  { key: "yaw",   label: "YAW",   jp: "ヨー",    color: "#0284c7", bg: "#f0f9ff", range: [-180, 180] },
 ];
 
 const R = 56;
 const ARC_PATH = `M ${-R} 0 A ${R} ${R} 0 0 1 ${R} 0`;
-const PATH_LENGTH = 100; // 正規化長
+const PATH_LENGTH = 100;
 
 function AxisCard({
   axis,
@@ -39,25 +40,35 @@ function AxisCard({
   needleRef: (el: SVGLineElement | null) => void;
 }) {
   return (
-    <div className="card-pad relative overflow-hidden flex flex-col items-center justify-end min-h-[200px]">
+    <div
+      className="card-pad relative overflow-hidden flex flex-col items-center justify-end min-h-[220px]"
+    >
+      {/* 軸固有の薄いアクセント帯 (識別性) */}
+      <div
+        className="absolute top-0 left-0 right-0 h-1 rounded-t-xl"
+        style={{ background: axis.color, opacity: 0.6 }}
+        aria-hidden
+      />
+
       {/* corner label */}
-      <div className="absolute top-3 left-3 flex items-center gap-2">
+      <div className="absolute top-4 left-4 flex items-center gap-2">
         <span
-          className="inline-block w-2 h-2 rounded-full"
-          style={{ background: axis.color, boxShadow: `0 0 10px ${axis.color}` }}
+          className="inline-block w-1.5 h-1.5 rounded-full"
+          style={{ background: axis.color }}
+          aria-hidden
         />
         <div className="leading-tight">
           <div
-            className="text-[10px] uppercase tracking-[0.18em] font-bold"
+            className="text-[11px] uppercase tracking-[0.14em] font-semibold"
             style={{ color: axis.color }}
           >
             {axis.label}
           </div>
-          <div className="text-[9px] text-glider-textMute">{axis.jp}</div>
+          <div className="text-[10px] text-slate-400">{axis.jp}</div>
         </div>
       </div>
 
-      <div className="absolute top-3 right-3 text-[10px] text-glider-textMute font-mono">
+      <div className="absolute top-4 right-4 text-[10px] text-slate-400 font-mono">
         ±180°
       </div>
 
@@ -71,18 +82,16 @@ function AxisCard({
         <path
           d={ARC_PATH}
           fill="none"
-          stroke="#232b39"
-          strokeWidth="9"
+          stroke="#e2e8f0"
+          strokeWidth="8"
           strokeLinecap="round"
         />
         {/* ticks */}
         {[-90, -45, 0, 45, 90].map((t) => {
-          // map t in [-90,90] to angle along upper-half arc
-          // theta = π * ((t+90)/180) starting from left
           const theta = Math.PI * ((t + 90) / 180);
           const x1 = -R * Math.cos(theta);
           const y1 = -R * Math.sin(theta);
-          const len = t === 0 ? 14 : 10;
+          const len = t === 0 ? 12 : 8;
           const x2 = -(R - len) * Math.cos(theta);
           const y2 = -(R - len) * Math.sin(theta);
           return (
@@ -92,17 +101,17 @@ function AxisCard({
               y1={y1}
               x2={x2}
               y2={y2}
-              stroke={t === 0 ? axis.color : "#475569"}
-              strokeWidth={t === 0 ? 2 : 1}
-              opacity={t === 0 ? 0.9 : 0.6}
+              stroke={t === 0 ? axis.color : "#cbd5e1"}
+              strokeWidth={t === 0 ? 1.5 : 1}
+              opacity={t === 0 ? 0.7 : 0.6}
             />
           );
         })}
-        {/* center label */}
+        {/* center labels */}
         <text
           x="0"
           y="-2"
-          fill="#475569"
+          fill="#94a3b8"
           fontSize="7"
           textAnchor="middle"
           fontFamily="JetBrains Mono, monospace"
@@ -112,7 +121,7 @@ function AxisCard({
         <text
           x={-R}
           y="-2"
-          fill="#475569"
+          fill="#cbd5e1"
           fontSize="7"
           textAnchor="middle"
           fontFamily="JetBrains Mono, monospace"
@@ -122,7 +131,7 @@ function AxisCard({
         <text
           x={R}
           y="-2"
-          fill="#475569"
+          fill="#cbd5e1"
           fontSize="7"
           textAnchor="middle"
           fontFamily="JetBrains Mono, monospace"
@@ -136,13 +145,10 @@ function AxisCard({
           d={ARC_PATH}
           fill="none"
           stroke={axis.color}
-          strokeWidth="9"
+          strokeWidth="8"
           strokeLinecap="round"
           pathLength={PATH_LENGTH}
           strokeDasharray={`0 ${PATH_LENGTH}`}
-          style={{
-            filter: `drop-shadow(0 0 5px ${axis.color}80)`,
-          }}
         />
 
         {/* needle */}
@@ -159,26 +165,21 @@ function AxisCard({
             transformOrigin: "0px 0px",
             transformBox: "view-box",
             transform: "rotate(0deg)",
-            filter: `drop-shadow(0 0 4px ${axis.color})`,
           }}
         />
         {/* hub */}
         <circle cx="0" cy="0" r="3" fill={axis.color} />
       </svg>
 
-      {/* Numeric */}
-      <div className="mt-1 flex items-baseline gap-1 leading-none">
+      {/* Numeric — slate-800 でクリーン、識別色は控えめ */}
+      <div className="mt-2 flex items-baseline gap-1 leading-none">
         <span
           ref={valueRef}
-          className="stat-val text-[3.2rem] md:text-6xl font-extrabold"
-          style={{
-            color: axis.color,
-            textShadow: `0 0 24px ${axis.color}55`,
-          }}
+          className="stat-val text-[2.6rem] md:text-5xl font-bold text-slate-800"
         >
           0.0
         </span>
-        <span className="text-sm text-glider-textMute font-mono">°</span>
+        <span className="text-base text-slate-400 font-mono">°</span>
       </div>
     </div>
   );
@@ -214,7 +215,6 @@ export function AttitudeHero({
             arcEl.setAttribute("stroke-dasharray", `${visible} ${PATH_LENGTH}`);
           }
           if (needleEl) {
-            // map norm (0..1) to angle (-90..90) deg
             const deg = -90 + norm * 180;
             needleEl.setAttribute("transform", `rotate(${deg})`);
           }
@@ -229,7 +229,7 @@ export function AttitudeHero({
   }, [attitudeRef]);
 
   return (
-    <div className="grid grid-cols-3 gap-3">
+    <div className="grid grid-cols-3 gap-4">
       {AXES.map((axis) => (
         <AxisCard
           key={axis.key}

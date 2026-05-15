@@ -2,10 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+  Glider WebUI — Light, modern, minimalist
+  クリーンな白基調 / slate-800 テキスト / indigo 1色アクセント / ホワイトスペース重視
+*/
+
 html,
 body {
-  background: #060912;
-  color: #f1f5f9;
+  background: #f8fafc;  /* slate-50 */
+  color: #1e293b;       /* slate-800 */
   height: 100%;
 }
 
@@ -14,79 +19,107 @@ body {
   font-family: "Inter", "Noto Sans JP", system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background:
-    radial-gradient(ellipse 80% 60% at 50% -10%, rgba(56, 189, 248, 0.07), transparent 60%),
-    radial-gradient(ellipse 70% 50% at 100% 100%, rgba(168, 85, 247, 0.05), transparent 60%),
-    #060912;
+  background: #f8fafc;
   background-attachment: fixed;
 }
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
+/* Subtle scrollbar (slate-300 base, slate-400 on hover) */
+::-webkit-scrollbar { width: 12px; height: 12px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: #2e3849;
-  border-radius: 5px;
-  border: 2px solid transparent;
+  background: #cbd5e1;  /* slate-300 */
+  border-radius: 6px;
+  border: 3px solid transparent;
   background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover { background: #3b4759; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; background-clip: content-box; }
+
+/* Focus ring — indigo, subtle */
+:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 
 @layer components {
+  /*
+    Card — 階層表現は border ではなく shadow-sm が主、薄い border は補助で
+    枠線を強くしすぎないこと
+  */
   .card {
-    @apply bg-gradient-to-b from-glider-panel to-glider-surface
-           border border-glider-border rounded-xl shadow-card;
+    @apply bg-white rounded-xl shadow-card ring-1 ring-slate-200/60;
   }
-  .card-tight { @apply card p-3; }
-  .card-pad   { @apply card p-4; }
+  .card-tight { @apply card p-4; }
+  .card-pad   { @apply card p-5; }
 
+  /* Section header label — 控えめなアイブロー */
   .section-title {
-    @apply text-[10px] uppercase tracking-[0.18em] font-semibold text-glider-textDim;
+    @apply text-[11px] uppercase tracking-[0.12em] font-semibold text-slate-500;
   }
 
   .stat-label {
-    @apply text-[10px] uppercase tracking-wider font-medium text-glider-textMute;
+    @apply text-[10px] uppercase tracking-wider font-medium text-slate-400;
   }
 
   .stat-val {
     @apply font-mono tabular-nums;
   }
 
+  /*
+    Buttons — primary は indigo 1色のみ
+    補助アクションは ghost (白背景 + 微妙な境界)
+  */
   .btn {
-    @apply inline-flex items-center justify-center gap-1.5
-           px-3 py-1.5 rounded-md text-sm font-semibold
+    @apply inline-flex items-center justify-center gap-2
+           px-4 py-2 rounded-lg text-sm font-medium
            transition-all duration-150 select-none
            disabled:opacity-40 disabled:cursor-not-allowed;
   }
   .btn-primary {
-    @apply btn bg-glider-accent text-black hover:brightness-110 active:brightness-95;
+    @apply btn bg-indigo-600 text-white shadow-sm
+           hover:bg-indigo-700 active:bg-indigo-800
+           focus-visible:ring-2 focus-visible:ring-indigo-300 focus-visible:ring-offset-1;
   }
   .btn-danger {
-    @apply btn bg-glider-err text-white hover:brightness-110 active:brightness-95;
+    @apply btn bg-rose-600 text-white shadow-sm
+           hover:bg-rose-700 active:bg-rose-800;
   }
   .btn-ghost {
-    @apply btn bg-glider-panel border border-glider-border
-           text-glider-text hover:bg-glider-panelHi hover:border-glider-borderHi;
+    @apply btn bg-white text-slate-700 ring-1 ring-slate-200
+           hover:bg-slate-50 hover:ring-slate-300;
   }
 
+  /* Tab — pill style, アクティブはアクセント背景 */
   .tab {
-    @apply btn-ghost text-xs;
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5
+           rounded-md text-xs font-medium transition-all
+           text-slate-600 hover:text-slate-900 hover:bg-slate-100/80;
   }
   .tab-active {
-    @apply bg-glider-accent text-black border-glider-accent
-           shadow-[0_0_18px_rgba(56,189,248,0.25)] hover:brightness-110;
+    @apply bg-indigo-600 text-white shadow-sm hover:bg-indigo-700 hover:text-white;
   }
 
+  /* Keyboard key visual */
   .kbd {
-    @apply inline-block px-1.5 py-0.5 text-[10px] font-mono font-semibold
-           bg-glider-surface border border-glider-border rounded
-           text-glider-textDim;
+    @apply inline-block px-1.5 py-0.5 text-[10px] font-mono font-medium
+           bg-slate-100 ring-1 ring-slate-200 rounded text-slate-600;
   }
+
+  /* Step badge (Pre-flight Workflow の番号バッジ) */
+  .step-badge {
+    @apply inline-flex items-center justify-center w-7 h-7 rounded-full
+           font-bold text-xs font-mono;
+  }
+  .step-badge-default { @apply step-badge bg-indigo-50 text-indigo-700 ring-1 ring-indigo-100; }
+  .step-badge-warn    { @apply step-badge bg-amber-50  text-amber-700  ring-1 ring-amber-100;  }
+  .step-badge-go      { @apply step-badge bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100; }
+  .step-badge-alt     { @apply step-badge bg-violet-50 text-violet-700 ring-1 ring-violet-100; }
 }
 
-/* Style uPlot to match dark theme */
-.uplot, .u-wrap { color: #94a3b8 !important; }
+/* uPlot charts — light theme */
+.uplot, .u-wrap { color: #475569 !important; }
 .u-legend { font-size: 11px !important; font-family: "JetBrains Mono", "Consolas", monospace !important; }
 .u-legend .u-marker { width: 10px !important; height: 10px !important; border-radius: 2px !important; }
-.u-legend .u-label { color: #cbd5e1 !important; }
-.u-legend .u-value { color: #f1f5f9 !important; font-weight: 600 !important; }
-.u-cursor-pt { background: rgba(56, 189, 248, 0.9) !important; }
+.u-legend .u-label { color: #475569 !important; }
+.u-legend .u-value { color: #1e293b !important; font-weight: 600 !important; }
+.u-cursor-pt { background: rgba(79, 70, 229, 0.9) !important; }

@@ -93,7 +93,7 @@ export function ArtificialHorizon({
           key={`l${deg}`}
           x={x}
           y={24}
-          fill={dn % 90 === 0 ? "#5cc8ff" : "#cbd5e1"}
+          fill={dn % 90 === 0 ? "#4f46e5" : "#64748b"}
           fontSize={dn % 90 === 0 ? 14 : 10}
           fontWeight={dn % 90 === 0 ? 700 : 500}
           textAnchor="middle"
@@ -212,7 +212,7 @@ export function ArtificialHorizon({
         </g>
 
         {/* Outer ring */}
-        <circle cx="0" cy="0" r="90" fill="none" stroke="#2e3849" strokeWidth="2" />
+        <circle cx="0" cy="0" r="90" fill="none" stroke="#cbd5e1" strokeWidth="2" />
 
         {/* Center "aircraft" symbol (fixed) */}
         <g>
@@ -223,9 +223,9 @@ export function ArtificialHorizon({
           <line x1="15"  y1="0" x2="15"  y2="5" stroke="#fbbf24" strokeWidth="3" />
         </g>
 
-        {/* Yaw compass strip at the bottom */}
+        {/* Yaw compass strip at the bottom (light theme) */}
         <g transform="translate(0 95)">
-          <rect x="-90" y="-12" width="180" height="30" fill="#0b1018" stroke="#2e3849" />
+          <rect x="-90" y="-12" width="180" height="30" fill="#f8fafc" stroke="#cbd5e1" rx="4" />
           <g clipPath="url(#yawClip)">
             <g ref={yawRef}>{compassTicks}</g>
           </g>
@@ -242,7 +242,7 @@ export function ArtificialHorizon({
         <text
           ref={rollTextRef}
           x="-80" y="-72"
-          fill="#ff5d6c"
+          fill="#e11d48"
           fontSize="10"
           fontWeight="700"
           fontFamily="JetBrains Mono, monospace"
@@ -252,7 +252,7 @@ export function ArtificialHorizon({
         <text
           ref={pitchTextRef}
           x="80" y="-72"
-          fill="#3ddc97"
+          fill="#059669"
           fontSize="10"
           fontWeight="700"
           textAnchor="end"
@@ -263,7 +263,7 @@ export function ArtificialHorizon({
         <text
           ref={yawTextRef}
           x="0" y="110"
-          fill="#5cc8ff"
+          fill="#0284c7"
           fontSize="11"
           fontWeight="700"
           textAnchor="middle"

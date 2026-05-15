@@ -47,9 +47,9 @@ function PlaneWithAttitude({
 function Axes() {
   return (
     <group>
-      <arrowHelper args={[new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 0), 2, 0xff5d6c]} />
-      <arrowHelper args={[new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0), 2, 0x3ddc97]} />
-      <arrowHelper args={[new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, 0), 2, 0x5cc8ff]} />
+      <arrowHelper args={[new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 0), 2, 0xe11d48]} />
+      <arrowHelper args={[new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0), 2, 0x059669]} />
+      <arrowHelper args={[new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, 0), 2, 0x0284c7]} />
     </group>
   );
 }
@@ -59,15 +59,15 @@ function AxisDots() {
     <group>
       <mesh position={[2.2, 0, 0]}>
         <sphereGeometry args={[0.06, 12, 12]} />
-        <meshBasicMaterial color="#ff5d6c" />
+        <meshBasicMaterial color="#e11d48" />
       </mesh>
       <mesh position={[0, 2.2, 0]}>
         <sphereGeometry args={[0.06, 12, 12]} />
-        <meshBasicMaterial color="#3ddc97" />
+        <meshBasicMaterial color="#059669" />
       </mesh>
       <mesh position={[0, 0, 2.2]}>
         <sphereGeometry args={[0.06, 12, 12]} />
-        <meshBasicMaterial color="#5cc8ff" />
+        <meshBasicMaterial color="#0284c7" />
       </mesh>
     </group>
   );
@@ -112,10 +112,10 @@ function Glider3DImpl({
         <select
           value={preset}
           onChange={(e) => setPreset(e.target.value as PresetKey)}
-          className="bg-glider-surface border border-glider-border rounded-md
-                     text-xs text-glider-text font-mono
-                     px-2 py-1 focus:outline-none focus:border-glider-accent
-                     hover:border-glider-borderHi cursor-pointer"
+          className="bg-white ring-1 ring-slate-200 rounded-md
+                     text-xs text-slate-700 font-medium
+                     px-2.5 py-1.5 focus:outline-none focus:ring-indigo-400
+                     hover:ring-slate-300 cursor-pointer shadow-sm"
           title="機体形状プリセット"
         >
           {PRESET_ORDER.map((key) => (
@@ -152,18 +152,18 @@ function Glider3DImpl({
         camera={{ position: [4, 3, 5], fov: 45 }}
         style={{
           background:
-            "radial-gradient(ellipse at 50% 30%, #0e1726 0%, #060912 70%)",
+            "radial-gradient(ellipse at 50% 20%, #ffffff 0%, #f1f5f9 70%, #e2e8f0 100%)",
         }}
         frameloop="always"
       >
-        <ambientLight intensity={0.5} />
-        <directionalLight position={[5, 8, 5]} intensity={0.9} />
-        <directionalLight position={[-5, 4, -3]} intensity={0.3} color="#5cc8ff" />
+        <ambientLight intensity={0.7} />
+        <directionalLight position={[5, 8, 5]} intensity={0.8} />
+        <directionalLight position={[-5, 4, -3]} intensity={0.25} color="#a5b4fc" />
         <Grid
           args={[20, 20]}
           position={[0, -1.5, 0]}
-          cellColor="#1f2937"
-          sectionColor="#334155"
+          cellColor="#cbd5e1"
+          sectionColor="#94a3b8"
           fadeDistance={20}
           fadeStrength={1}
           infiniteGrid

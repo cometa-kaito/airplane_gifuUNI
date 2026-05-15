@@ -48,12 +48,12 @@ const LAUNCH_G_PRESETS = [
 ];
 
 const PHASE_COLORS: Record<number, string> = {
-  0: "#64748b",   // DISARMED   gray
-  1: "#f59e0b",   // PRELAUNCH  amber
-  2: "#ef4444",   // LAUNCH     red
-  3: "#22c55e",   // GLIDE      green
-  4: "#3b82f6",   // LANDED     blue
-  5: "#a855f7",   // WINDTUNNEL purple
+  0: "#64748b",   // DISARMED   slate-500
+  1: "#d97706",   // PRELAUNCH  amber-600
+  2: "#dc2626",   // LAUNCH     red-600
+  3: "#059669",   // GLIDE      emerald-600
+  4: "#2563eb",   // LANDED     blue-600
+  5: "#7c3aed",   // WINDTUNNEL violet-600
 };
 
 const PHASE_DESC: Record<number, string> = {
@@ -179,14 +179,12 @@ export function LaunchPanel({
         const aMag =
           f.accel_g ?? Math.sqrt(f.ax * f.ax + f.ay * f.ay + f.az * f.az);
 
-        // 大きなフェーズ表示
+        // 大きなフェーズ表示 (テキストシャドウは使わない、色のみで識別)
         if (phaseLabelRef.current) {
           const name = PHASE_NAMES[phase] ?? `?${phase}`;
           if (phaseLabelRef.current.textContent !== name) {
             phaseLabelRef.current.textContent = name;
-            const color = PHASE_COLORS[phase] ?? "#fff";
-            phaseLabelRef.current.style.color = color;
-            phaseLabelRef.current.style.textShadow = `0 0 18px ${color}88`;
+            phaseLabelRef.current.style.color = PHASE_COLORS[phase] ?? "#1e293b";
           }
         }
         if (phaseDescRef.current) {

@@ -93,7 +93,7 @@ export function WindTunnelPanel({
         if (phaseRef.current) {
           phaseRef.current.textContent = phaseName;
           phaseRef.current.style.color =
-            phaseIdx === 5 ? "#a855f7" : "#64748b";
+            phaseIdx === 5 ? "#7c3aed" : "#64748b";  // violet-600 / slate-500
         }
         if (rollRef.current) {
           rollRef.current.textContent =
@@ -234,7 +234,7 @@ export function WindTunnelPanel({
         <button
           onClick={enterWT}
           disabled={!enabled || busy}
-          className="btn-primary text-base px-5 py-2.5 font-bold !bg-purple-500 hover:!bg-purple-400 !border-purple-400/60"
+          className="btn text-base px-5 py-2.5 font-semibold bg-violet-600 text-white shadow-sm hover:bg-violet-700 active:bg-violet-800"
           title="風洞試験モードへ遷移（PID 起動）"
         >
           {busy ? "..." : "🌬 Enter Wind Tunnel"}

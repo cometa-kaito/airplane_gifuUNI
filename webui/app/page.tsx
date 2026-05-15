@@ -32,7 +32,7 @@ const SNAPSHOT_INTERVAL_MS = 200; // チャート再描画頻度（=5Hz）
 
 /**
  * Step ヘッダ：操作フロー上のセクションに番号と一言の役割説明を付ける。
- * 「ユーザが触る順番」に並べた page.tsx 内のセクションで使う。
+ * 番号バッジ + タイトル + サブテキストで階層を明確化（タイポグラフィのコントラスト）。
  */
 function StepHeader({
   num,
@@ -45,26 +45,22 @@ function StepHeader({
   hint: string;
   tone?: "default" | "warn" | "go";
 }) {
-  const toneCls =
+  const badgeCls =
     tone === "go"
-      ? "bg-glider-ok/15 text-glider-ok border-glider-ok/30"
+      ? "step-badge-go"
       : tone === "warn"
-        ? "bg-glider-warn/15 text-glider-warn border-glider-warn/30"
-        : "bg-glider-accent/15 text-glider-accent border-glider-accent/30";
+        ? "step-badge-warn"
+        : "step-badge-default";
   return (
-    <div className="flex items-center gap-2 mb-1.5">
-      <span
-        className={`inline-flex items-center justify-center w-6 h-6 rounded-full
-                    border font-bold text-xs font-mono ${toneCls}`}
-        aria-hidden
-      >
+    <div className="flex items-center gap-3 mb-3">
+      <span className={badgeCls} aria-hidden>
         {num}
       </span>
       <div className="leading-tight">
-        <div className="text-[13px] font-bold text-glider-text uppercase tracking-wider">
+        <div className="text-base font-semibold text-slate-800 tracking-tight">
           {title}
         </div>
-        <div className="text-[10px] text-glider-textMute">{hint}</div>
+        <div className="text-xs text-slate-500 mt-0.5">{hint}</div>
       </div>
     </div>
   );
@@ -118,29 +114,25 @@ export default function Page() {
 
   return (
     <main className="min-h-screen">
-      {/* Sticky header — Step 0: Connect */}
-      <header
-        className="sticky top-0 z-30 backdrop-blur-md bg-glider-bg/70
-                   border-b border-glider-border"
-      >
-        <div className="max-w-[1600px] mx-auto px-4 md:px-6 py-3
-                        flex flex-wrap items-center justify-between gap-3">
+      {/* Sticky header — Step 0: Connect。クリーンな白背景、薄い shadow で区切る */}
+      <header className="sticky top-0 z-30 backdrop-blur-md bg-white/80 shadow-sm">
+        <div className="max-w-[1600px] mx-auto px-4 md:px-8 py-4
+                        flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-3">
               <div
-                className="w-9 h-9 rounded-lg flex items-center justify-center
-                           bg-gradient-to-br from-glider-accent to-glider-pitch
-                           text-black font-extrabold text-lg shadow-glow"
+                className="w-10 h-10 rounded-xl flex items-center justify-center
+                           bg-indigo-600 text-white font-semibold text-xl shadow-sm"
                 aria-hidden
               >
                 ✈
               </div>
               <div className="leading-tight">
-                <h1 className="text-base md:text-lg font-bold text-glider-text">
+                <h1 className="text-lg font-semibold text-slate-800 tracking-tight">
                   Glider Telemetry
                 </h1>
-                <div className="text-[10px] text-glider-textMute tracking-wider uppercase">
-                  自律滑空機 表示 UI · Pre-flight Workflow
+                <div className="text-xs text-slate-500 mt-0.5">
+                  自律滑空機 · Pre-flight Workflow
                 </div>
               </div>
             </div>
@@ -179,12 +171,12 @@ export default function Page() {
         </div>
       </header>
 
-      <div className="max-w-[1600px] mx-auto px-4 md:px-6 py-5 space-y-5">
+      <div className="max-w-[1600px] mx-auto px-4 md:px-8 py-8 space-y-8">
         {/* ============================================================ */}
         {/* MONITOR (常時表示): 接続〜飛行中の視認用ヒーロー               */}
         {/* ============================================================ */}
         <section
-          className="grid gap-4"
+          className="grid gap-5"
           style={{ gridTemplateColumns: "minmax(0, 2fr) minmax(280px, 1fr)" }}
         >
           <AttitudeHero attitudeRef={attitudeRef} />
@@ -198,24 +190,30 @@ export default function Page() {
         {/* ============================================================ */}
         {/* PRE-FLIGHT WORKFLOW (上から順に触る)                          */}
         {/* ============================================================ */}
-        <div className="rounded-lg border border-glider-border/60 bg-glider-bg/40 p-3 md:p-4 space-y-4">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] uppercase tracking-[0.18em] font-bold text-glider-accent">
-                ▸ Pre-flight Workflow
-              </span>
-              <span className="text-[10px] text-glider-textMute">
-                上から ① → ② → ③ → ④ → ⑤ の順に操作
-              </span>
+        <section className="space-y-5">
+          <div className="flex items-center justify-between flex-wrap gap-3 px-1">
+            <div>
+              <h2 className="text-xl font-semibold text-slate-800 tracking-tight">
+                Pre-flight Workflow
+              </h2>
+              <p className="text-sm text-slate-500 mt-0.5">
+                上から順に ① キャリブ → ② 安全装置 → ③ トリム → ④ PID → ⑤ Launch
+              </p>
             </div>
             <span
-              className={`text-[10px] font-bold tracking-wider px-2 py-1 rounded ${
+              className={`inline-flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-full ${
                 status === "open"
-                  ? "bg-glider-ok/10 text-glider-ok"
-                  : "bg-glider-textMute/10 text-glider-textMute"
+                  ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"
+                  : "bg-slate-100 text-slate-500 ring-1 ring-slate-200"
               }`}
             >
-              {status === "open" ? "DEVICE CONNECTED" : "WAITING DEVICE"}
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  status === "open" ? "bg-emerald-500 animate-pulseLive" : "bg-slate-400"
+                }`}
+                aria-hidden
+              />
+              {status === "open" ? "Device Connected" : "Waiting Device"}
             </span>
           </div>
 
@@ -285,24 +283,22 @@ export default function Page() {
           </div>
 
           {/* Step 5b (代替): 風洞試験モード。フライトでは使わない */}
-          <details className="border-t border-glider-border/40 pt-3">
-            <summary className="cursor-pointer select-none flex items-center gap-2 mb-2">
-              <span
-                className="inline-flex items-center justify-center w-6 h-6 rounded-full
-                           border font-bold text-xs font-mono
-                           bg-purple-500/15 text-purple-400 border-purple-500/30"
-                aria-hidden
-              >
+          <details className="pt-2">
+            <summary className="cursor-pointer select-none flex items-center gap-3 mb-3">
+              <span className="step-badge-alt" aria-hidden>
                 5b
               </span>
               <div className="leading-tight">
-                <div className="text-[13px] font-bold text-glider-text uppercase tracking-wider">
+                <div className="text-base font-semibold text-slate-800 tracking-tight">
                   Wind Tunnel · 風洞試験モード（代替）
                 </div>
-                <div className="text-[10px] text-glider-textMute">
+                <div className="text-xs text-slate-500 mt-0.5">
                   風洞でステップ応答や PID 調整をする時のみ展開。フライトでは使わない
                 </div>
               </div>
+              <svg className="w-4 h-4 ml-auto text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
             </summary>
             <WindTunnelPanel
               attitudeRef={attitudeRef}
@@ -310,19 +306,19 @@ export default function Page() {
               enabled={status === "open"}
             />
           </details>
-        </div>
+        </section>
 
         {/* ============================================================ */}
         {/* IN-FLIGHT MONITORING / POST-FLIGHT ANALYSIS                   */}
         {/* ============================================================ */}
-        <div className="rounded-lg border border-glider-border/60 bg-glider-bg/40 p-3 md:p-4 space-y-4">
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-[0.18em] font-bold text-glider-pitch">
-              ▸ In-flight / Post-flight
-            </span>
-            <span className="text-[10px] text-glider-textMute">
+        <section className="space-y-5">
+          <div className="px-1">
+            <h2 className="text-xl font-semibold text-slate-800 tracking-tight">
+              In-flight / Post-flight
+            </h2>
+            <p className="text-sm text-slate-500 mt-0.5">
               飛行中の監視と、飛行後のログ操作
-            </span>
+            </p>
           </div>
 
           {/* 3D + チャート群 (飛行中の視認・解析用) */}
@@ -342,16 +338,21 @@ export default function Page() {
 
           {/* 記録: 保存 / 一覧 / 書き出し / 削除 */}
           <RecorderPanel historyRef={history} liveOK={status === "open"} />
-        </div>
+        </section>
 
         {/* ============================================================ */}
         {/* ADVANCED · 生コマンド + デバイスログ (Test/デバッグ用)         */}
         {/* ============================================================ */}
-        <details className="rounded-lg border border-glider-border/60 bg-glider-bg/40" open>
-          <summary className="px-4 py-3 cursor-pointer select-none text-[12px] uppercase tracking-[0.18em] font-bold text-glider-textDim hover:text-glider-text">
-            ▸ Advanced · 生コマンド + デバイスログ
+        <details className="rounded-xl bg-white shadow-card ring-1 ring-slate-200/60" open>
+          <summary className="px-5 py-4 cursor-pointer select-none text-sm font-medium text-slate-600 hover:text-slate-800 transition-colors">
+            <span className="inline-flex items-center gap-2">
+              <svg className="w-4 h-4 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+              Advanced · 生コマンド + デバイスログ
+            </span>
           </summary>
-          <div className="p-4 pt-0 space-y-4">
+          <div className="px-5 pb-5 pt-1 space-y-4">
             <CommandPanel
               onSend={sendCommand}
               enabled={status === "open"}
@@ -365,20 +366,19 @@ export default function Page() {
           </div>
         </details>
 
-        <footer className="pt-2 pb-6 text-[11px] text-glider-textMute space-y-1
-                           border-t border-glider-border/50">
-          <div className="pt-3 flex flex-wrap gap-x-6 gap-y-1">
+        <footer className="pt-6 pb-8 text-xs text-slate-500 space-y-2 mt-4">
+          <div className="flex flex-wrap gap-x-6 gap-y-1">
             <span>
-              <strong className="text-glider-textDim">WebSocket</strong> —
+              <strong className="font-medium text-slate-700">WebSocket</strong> —
               Python ground_station.py 経由 (PyQt と並行可、複数端末で共有可)
             </span>
             <span>
-              <strong className="text-glider-textDim">WebSerial</strong> —
+              <strong className="font-medium text-slate-700">WebSerial</strong> —
               ブラウザから USB を直接掴む (Chrome / Edge のみ、Python 不要)
             </span>
           </div>
-          <div className="text-glider-textMute/70">
-            Numeric ≈60Hz (RAF, no rerender) · Charts 5Hz (uPlot) · 3D 60fps · WS reconnect with backoff
+          <div className="text-slate-400">
+            Numeric ≈60Hz · Charts 5Hz · 3D 60fps · WS reconnect with backoff
           </div>
         </footer>
       </div>

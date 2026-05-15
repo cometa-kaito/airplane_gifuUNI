@@ -138,11 +138,11 @@ export function QuickControl({
     return () => window.removeEventListener("keydown", onKey);
   }, [pitchUp, pitchDn, rollL, rollR, center, onSend]);
 
-  // ボタン共通スタイル
+  // D-pad ボタン共通スタイル (クリーンライトテーマ、shadow-sm で立体感)
   const padBtn =
-    "h-14 min-w-[5rem] rounded-md font-bold text-sm transition-all select-none " +
-    "bg-glider-surface border border-glider-border text-glider-text " +
-    "hover:bg-glider-panelHi hover:border-glider-borderHi active:scale-95 " +
+    "h-14 min-w-[5rem] rounded-lg font-semibold text-sm transition-all select-none " +
+    "bg-white text-slate-700 ring-1 ring-slate-200 shadow-sm " +
+    "hover:bg-slate-50 hover:ring-slate-300 active:scale-95 " +
     "disabled:opacity-40 disabled:cursor-not-allowed";
 
   return (
@@ -174,8 +174,8 @@ export function QuickControl({
             R Ail
           </span>
           <span
-            className="stat-val text-lg font-bold"
-            style={{ color: "#ff922b" }}
+            className="stat-val text-lg font-semibold"
+            style={{ color: "#ea580c" }}
           >
             {trim.s0 >= 0 ? "+" : ""}
             {trim.s0}°
@@ -186,8 +186,8 @@ export function QuickControl({
             L Ail
           </span>
           <span
-            className="stat-val text-lg font-bold"
-            style={{ color: "#ffd43b" }}
+            className="stat-val text-lg font-semibold"
+            style={{ color: "#ca8a04" }}
           >
             {trim.s1 >= 0 ? "+" : ""}
             {trim.s1}°
@@ -198,8 +198,8 @@ export function QuickControl({
             Elev
           </span>
           <span
-            className="stat-val text-lg font-bold"
-            style={{ color: "#a9e34b" }}
+            className="stat-val text-lg font-semibold"
+            style={{ color: "#65a30d" }}
           >
             {trim.s2 >= 0 ? "+" : ""}
             {trim.s2}°
@@ -218,15 +218,15 @@ export function QuickControl({
           <span className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
             Step
           </span>
-          <div className="inline-flex p-1 bg-glider-surface border border-glider-border rounded-lg">
+          <div className="inline-flex p-1 bg-slate-100 rounded-lg">
             {STEPS.map((s) => (
               <button
                 key={s}
                 onClick={() => setStep(s)}
-                className={`px-3 py-1 rounded-md text-xs font-bold transition ${
+                className={`px-3 py-1 rounded-md text-xs font-semibold transition ${
                   step === s
-                    ? "bg-glider-accent text-black shadow-[0_0_12px_rgba(56,189,248,0.25)]"
-                    : "text-glider-textDim hover:bg-glider-panelHi"
+                    ? "bg-white text-indigo-700 shadow-sm"
+                    : "text-slate-500 hover:text-slate-700"
                 }`}
               >
                 {s}°
@@ -269,7 +269,7 @@ export function QuickControl({
               disabled={!enabled}
               className={
                 padBtn +
-                " !bg-glider-ok/15 !border-glider-ok/40 !text-glider-ok hover:!bg-glider-ok/25"
+                " !bg-emerald-50 !ring-emerald-200 !text-emerald-700 hover:!bg-emerald-100 hover:!ring-emerald-300"
               }
               title="Center all (Space)"
             >
