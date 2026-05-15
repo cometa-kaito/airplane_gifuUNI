@@ -106,6 +106,14 @@ uint32_t lastUplinkMs = 0;
 uint32_t failsafeTimeoutMs = 1500;  // 0 で無効化
 bool failsafeActive = false;
 
+// ---- attitude safeguard (over-tilt -> MANUAL) ----
+//   AUTO 中に |roll| または |pitch| が tiltSafeguardDeg を超えたら、
+//   自動的に MANUAL + trim=0 へ強制復帰する。
+//   0 で無効化。`safe_angle <deg>` コマンドで実行時設定可。
+//   再武装は `a`/`auto`/`1`/`2`/`3` コマンドで AUTO に戻ったタイミング。
+float tiltSafeguardDeg = 60.0f;     // 既定 60°
+bool  tiltSafeguardTriggered = false;
+
 // ---- command parser ----
 static char cmdBuf[120];
 static size_t cmdLen = 0;
@@ -209,6 +217,10 @@ static void printStatus() {
 #endif
   );
   radioPrintln(buf);
+  snprintf(buf, sizeof(buf),
+    "[STATUS] safe_angle=%.1fdeg tripped=%s",
+    tiltSafeguardDeg, tiltSafeguardTriggered ? "YES" : "no");
+  radioPrintln(buf);
 }
 
 static void printHelp() {
@@ -228,7 +240,8 @@ static void printHelp() {
   radioPrintln("[INFO]   s2 <v>  (D2 elevator)");
   radioPrintln("[INFO] Other:");
   radioPrintln("[INFO]   status / help / tlm on / tlm off");
-  radioPrintln("[INFO]   failsafe <ms>   uplink-loss timeout (0 = disabled)");
+  radioPrintln("[INFO]   failsafe <ms>      uplink-loss timeout (0 = disabled)");
+  radioPrintln("[INFO]   safe_angle <deg>   tilt-safeguard threshold (0 = disabled)");
 }
 
 // =============================================================
@@ -255,6 +268,7 @@ static void handleCommandLine(char* line) {
   }
   if (iequals(cmd, "a") || iequals(cmd, "auto")) {
     baseMode = MODE_AUTO;
+    tiltSafeguardTriggered = false;  // 再武装
     radioPrintln("[MODE] AUTO");
     return;
   }
@@ -269,9 +283,9 @@ static void handleCommandLine(char* line) {
     return;
   }
 
-  if (iequals(cmd, "1")) { autoSub = SUB_P;   baseMode = MODE_AUTO; radioPrintln("[MODE] AUTO/P");   return; }
-  if (iequals(cmd, "2")) { autoSub = SUB_PD;  baseMode = MODE_AUTO; radioPrintln("[MODE] AUTO/PD");  return; }
-  if (iequals(cmd, "3")) { autoSub = SUB_PID; baseMode = MODE_AUTO; radioPrintln("[MODE] AUTO/PID"); return; }
+  if (iequals(cmd, "1")) { autoSub = SUB_P;   baseMode = MODE_AUTO; tiltSafeguardTriggered = false; radioPrintln("[MODE] AUTO/P");   return; }
+  if (iequals(cmd, "2")) { autoSub = SUB_PD;  baseMode = MODE_AUTO; tiltSafeguardTriggered = false; radioPrintln("[MODE] AUTO/PD");  return; }
+  if (iequals(cmd, "3")) { autoSub = SUB_PID; baseMode = MODE_AUTO; tiltSafeguardTriggered = false; radioPrintln("[MODE] AUTO/PID"); return; }
 
   if (iequals(cmd, "s0") || iequals(cmd, "s1") || iequals(cmd, "s2")) {
     int idx = cmd[1] - '0';
@@ -328,6 +342,22 @@ static void handleCommandLine(char* line) {
     failsafeTimeoutMs = (uint32_t)v;
     char buf[64];
     snprintf(buf, sizeof(buf), "[PARAM] failsafe=%lums", (unsigned long)failsafeTimeoutMs);
+    radioPrintln(buf);
+    return;
+  }
+
+  // 姿勢角しきい値安全装置の設定（`tilt_limit` も別名で受ける）
+  if (iequals(cmd, "safe_angle") || iequals(cmd, "tilt_limit")) {
+    char* arg = nextToken(p);
+    float v;
+    if (!arg || !parseFloat(arg, &v) || v < 0.0f || v > 180.0f) {
+      radioPrintln("[INFO] usage: safe_angle <deg 0..180>  (0 disables)");
+      return;
+    }
+    tiltSafeguardDeg = v;
+    tiltSafeguardTriggered = false;  // しきい値変更時はラッチも解除
+    char buf[64];
+    snprintf(buf, sizeof(buf), "[PARAM] safe_angle=%.1fdeg", tiltSafeguardDeg);
     radioPrintln(buf);
     return;
   }
@@ -444,6 +474,27 @@ void loop() {
   Q[0] = filter.getRoll();
   Q[1] = filter.getPitch();
   Q[2] = filter.getYaw();
+
+  // ---- attitude safeguard 判定 ----
+  //   AUTO 中に |roll| または |pitch| がしきい値を超えたら強制 MANUAL + trim=0。
+  //   ラッチ式 (tiltSafeguardTriggered) のため、メッセージは 1回だけ送出。
+  //   再武装は AUTO 系コマンド受信時。
+  if (tiltSafeguardDeg > 0.0f && baseMode == MODE_AUTO && !tiltSafeguardTriggered) {
+    float ar = fabsf(Q[0]);
+    float ap = fabsf(Q[1]);
+    float tiltMax = ar > ap ? ar : ap;
+    if (tiltMax > tiltSafeguardDeg) {
+      tiltSafeguardTriggered = true;
+      baseMode = MODE_MANUAL;
+      trimDeg[0] = trimDeg[1] = trimDeg[2] = 0.0f;
+      for (int i = 0; i < 3; i++) integralE[i] = 0.0f;
+      char sbuf[96];
+      snprintf(sbuf, sizeof(sbuf),
+        "[SAFEGUARD] tilt %.1fdeg > %.1fdeg -> MANUAL + trim=0",
+        tiltMax, tiltSafeguardDeg);
+      radioPrintln(sbuf);
+    }
+  }
 
   // mode transition: reset I/D state
   if (baseMode != prevBase || autoSub != prevSub) {
