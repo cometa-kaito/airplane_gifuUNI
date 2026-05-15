@@ -23,6 +23,8 @@ import sys
 import threading
 import time
 from collections import deque
+from datetime import datetime
+from pathlib import Path
 
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
@@ -34,13 +36,19 @@ import websockets
 # ------------------------------------------------------------------
 # シリアル受信 & 送信スレッド
 # ------------------------------------------------------------------
-TELEMETRY_FIELDS = [
+# 旧 15 列形式 (互換確保用)。新ファームは末尾に phase, accel_g を追加した 17 列を送る。
+TELEMETRY_FIELDS_CORE = [
     "seq", "t_ms", "dt_ms",
     "ax", "ay", "az",
     "gx", "gy", "gz",
     "roll", "pitch", "yaw",
     "s0", "s1", "s2",
 ]
+# 拡張列 (firmware 17列対応)
+TELEMETRY_FIELDS_EXT = ["phase", "accel_g"]
+TELEMETRY_FIELDS = TELEMETRY_FIELDS_CORE + TELEMETRY_FIELDS_EXT
+TELEMETRY_INT_FIELDS = {"seq", "t_ms", "dt_ms", "s0", "s1", "s2", "phase"}
+PHASE_NAMES = ["DISARMED", "PRELAUNCH", "LAUNCH", "GLIDE", "LANDED"]
 
 
 class SerialIO(QtCore.QObject):
@@ -50,7 +58,7 @@ class SerialIO(QtCore.QObject):
     new_info = QtCore.pyqtSignal(str)
     link_status = QtCore.pyqtSignal(bool)
 
-    def __init__(self, port: str, baud: int = 115200):
+    def __init__(self, port: str, baud: int = 115200, log_dir: Path | None = None):
         super().__init__()
         self.port = port
         self.baud = baud
@@ -59,6 +67,24 @@ class SerialIO(QtCore.QObject):
         self._tx_lock = threading.Lock()
         self._rx_count = 0
         self._bad_count = 0
+
+        # ---- CSV 自動保存 ----
+        #   起動と同時に logs/flight_YYYYMMDD_HHMMSS.csv へ書き込み開始する。
+        #   ヘッダは TELEMETRY_FIELDS + wall_ms。フライトログ取り忘れを防ぐ。
+        #   log_dir=None でディスク書き込み無効。
+        self._log_lock = threading.Lock()
+        self._log_file: Path | None = None
+        self._log_handle = None
+        if log_dir is not None:
+            try:
+                log_dir.mkdir(parents=True, exist_ok=True)
+                self._log_file = log_dir / f"flight_{datetime.now():%Y%m%d_%H%M%S}.csv"
+                self._log_handle = open(self._log_file, "w", encoding="utf-8", buffering=1)
+                self._log_handle.write(",".join(TELEMETRY_FIELDS + ["wall_ms"]) + "\n")
+            except Exception:
+                # ディスク書き込み失敗時はサイレントに無効化（飛行を妨げない）
+                self._log_file = None
+                self._log_handle = None
 
     def start(self):
         try:
@@ -77,6 +103,35 @@ class SerialIO(QtCore.QObject):
                 self._ser.close()
             except Exception:
                 pass
+        # CSV 出力をフラッシュ＆クローズ
+        with self._log_lock:
+            if self._log_handle is not None:
+                try:
+                    self._log_handle.flush()
+                    self._log_handle.close()
+                except Exception:
+                    pass
+                self._log_handle = None
+
+    def _write_log(self, rec: dict):
+        """テレメトリ 1 行を CSV にフラッシュする。失敗してもサイレントに続行。"""
+        h = self._log_handle
+        if h is None:
+            return
+        try:
+            cells = []
+            for k in TELEMETRY_FIELDS:
+                v = rec.get(k, "")
+                if isinstance(v, float):
+                    cells.append(f"{v:.6g}")
+                else:
+                    cells.append(str(v))
+            cells.append(str(int(time.time() * 1000)))
+            with self._log_lock:
+                if self._log_handle is not None:
+                    self._log_handle.write(",".join(cells) + "\n")
+        except Exception:
+            pass
 
     def send_command(self, cmd: str):
         if self._ser is None:
@@ -103,15 +158,20 @@ class SerialIO(QtCore.QObject):
                     self.new_info.emit(line[:200])
                     continue
                 parts = line.split(",")
-                if len(parts) != len(TELEMETRY_FIELDS):
+                # 下位互換: 旧 15 列も新 17 列も受理する。
+                # 不足分 (phase, accel_g 等) は欠損として 0 / 0.0 を入れる。
+                if len(parts) < len(TELEMETRY_FIELDS_CORE):
                     self._bad_count += 1
                     continue
                 try:
-                    rec = {
-                        name: (int(v) if name in ("seq", "t_ms", "dt_ms", "s0", "s1", "s2")
-                               else float(v))
-                        for name, v in zip(TELEMETRY_FIELDS, parts)
-                    }
+                    rec = {}
+                    for idx, name in enumerate(TELEMETRY_FIELDS):
+                        if idx < len(parts):
+                            raw_v = parts[idx]
+                            rec[name] = int(raw_v) if name in TELEMETRY_INT_FIELDS else float(raw_v)
+                        else:
+                            # 拡張列が無い旧 firmware からの受信時のフォールバック
+                            rec[name] = 0 if name in TELEMETRY_INT_FIELDS else 0.0
                 except ValueError:
                     self._bad_count += 1
                     continue
@@ -119,6 +179,8 @@ class SerialIO(QtCore.QObject):
                 rec["_rx_count"] = self._rx_count
                 rec["_bad_count"] = self._bad_count
                 last_rx = time.time()
+                # CSV へ自動保存 (UI 描画と独立、I/O は短い)
+                self._write_log(rec)
                 self.link_status.emit(True)
                 self.new_telemetry.emit(rec)
             except SerialException:
@@ -361,6 +423,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ws_port: int,
         ws_host: str = "127.0.0.1",
         ws_token: str | None = None,
+        log_dir: Path | None = None,
     ):
         super().__init__()
         self.setWindowTitle("Glider Ground Station")
@@ -376,7 +439,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.history["wall_t"] = deque(maxlen=HISTORY)
 
         # シリアル（WS のコマンドコールバックから参照する都合上、先に作る）
-        self.serial_io = SerialIO(port)
+        self.serial_io = SerialIO(port, log_dir=log_dir)
         self.serial_io.new_telemetry.connect(self.on_telemetry)
         self.serial_io.new_info.connect(self.on_info)
         self.serial_io.link_status.connect(self.on_link_status)
@@ -579,6 +642,53 @@ class MainWindow(QtWidgets.QMainWindow):
         self.big_mode.setMinimumWidth(140)
         v.addWidget(lbl_name)
         v.addWidget(self.big_mode)
+        wrap_inner = QtWidgets.QWidget()
+        wrap_inner.setLayout(v)
+        row.addWidget(wrap_inner)
+
+        # PHASE 表示 (フライトフェーズマシン状態)
+        sep3 = QtWidgets.QFrame()
+        sep3.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+        sep3.setStyleSheet("color: #333;")
+        row.addWidget(sep3)
+
+        v = QtWidgets.QVBoxLayout()
+        v.setSpacing(0)
+        v.setContentsMargins(0, 0, 0, 0)
+        lbl_name = QtWidgets.QLabel("PHASE")
+        lbl_name.setStyleSheet("color: #c0c8d4; font-size: 11px;")
+        self.big_phase = QtWidgets.QLabel("DISARMED")
+        # 色はフェーズに応じて _refresh_plots で書き換える
+        self.big_phase.setStyleSheet(
+            "color: #888888; font-family: Consolas, monospace; "
+            "font-size: 18px; font-weight: bold;"
+        )
+        self.big_phase.setMinimumWidth(140)
+        v.addWidget(lbl_name)
+        v.addWidget(self.big_phase)
+        wrap_inner = QtWidgets.QWidget()
+        wrap_inner.setLayout(v)
+        row.addWidget(wrap_inner)
+
+        # |a| 表示 (投擲しきい値の目安)
+        sep4 = QtWidgets.QFrame()
+        sep4.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+        sep4.setStyleSheet("color: #333;")
+        row.addWidget(sep4)
+
+        v = QtWidgets.QVBoxLayout()
+        v.setSpacing(0)
+        v.setContentsMargins(0, 0, 0, 0)
+        lbl_name = QtWidgets.QLabel("|a|")
+        lbl_name.setStyleSheet("color: #c0c8d4; font-size: 11px;")
+        self.big_accel = QtWidgets.QLabel("--")
+        self.big_accel.setStyleSheet(
+            "color: #ffffff; font-family: Consolas, monospace; "
+            "font-size: 18px; font-weight: bold;"
+        )
+        self.big_accel.setMinimumWidth(90)
+        v.addWidget(lbl_name)
+        v.addWidget(self.big_accel)
         wrap_inner = QtWidgets.QWidget()
         wrap_inner.setLayout(v)
         row.addWidget(wrap_inner)
@@ -976,6 +1086,44 @@ class MainWindow(QtWidgets.QMainWindow):
             self.big_s1.setText(f"{rec['s1']:>3d}°")
             self.big_s2.setText(f"{rec['s2']:>3d}°")
 
+        # フェーズ表示 (firmware 17 列対応分)
+        if hasattr(self, "big_phase"):
+            ph_idx = int(rec.get("phase", 0))
+            ph_name = PHASE_NAMES[ph_idx] if 0 <= ph_idx < len(PHASE_NAMES) else f"?{ph_idx}"
+            # フェーズに応じた色
+            ph_color = {
+                0: "#888888",  # DISARMED  gray
+                1: "#f59f00",  # PRELAUNCH amber
+                2: "#fa5252",  # LAUNCH    red (alert)
+                3: "#37b24d",  # GLIDE     green
+                4: "#5c7cfa",  # LANDED    blue
+            }.get(ph_idx, "#ffffff")
+            self.big_phase.setText(ph_name)
+            self.big_phase.setStyleSheet(
+                f"color: {ph_color}; font-family: Consolas, monospace; "
+                "font-size: 18px; font-weight: bold;"
+            )
+        if hasattr(self, "big_accel"):
+            ag = float(rec.get("accel_g", 0.0))
+            self.big_accel.setText(f"{ag:>4.2f}g")
+            # 投擲しきい値接近で警告色
+            try:
+                thr = float(self.spin_launch_g.value())
+            except Exception:
+                thr = 2.5
+            if ag >= thr:
+                self.big_accel.setStyleSheet(
+                    "color: #fa5252; font-family: Consolas, monospace; "
+                    "font-size: 18px; font-weight: bold;")
+            elif ag > thr * 0.7:
+                self.big_accel.setStyleSheet(
+                    "color: #f59f00; font-family: Consolas, monospace; "
+                    "font-size: 18px; font-weight: bold;")
+            else:
+                self.big_accel.setStyleSheet(
+                    "color: #ffffff; font-family: Consolas, monospace; "
+                    "font-size: 18px; font-weight: bold;")
+
         # 3D ペイン更新
         if hasattr(self, "pane3d"):
             self.pane3d.update_attitude(rec["roll"], rec["pitch"], rec["yaw"])
@@ -1046,7 +1194,17 @@ def main():
                         help="WebSocket バインド先 (LAN 公開時のみ 0.0.0.0)")
     parser.add_argument("--ws-token", default=None,
                         help="WS コマンド送信時に必須となるトークン（既定: 認証なし）")
+    # CSV 自動保存 (P2-2 改善方針)
+    default_log_dir = (Path(__file__).resolve().parent.parent / "logs").resolve()
+    parser.add_argument("--log-dir", default=str(default_log_dir),
+                        help=f"CSV 自動保存先ディレクトリ (既定: {default_log_dir})")
+    parser.add_argument("--no-log", action="store_true",
+                        help="CSV 自動保存を無効化 (ディスクに何も書かない)")
     args = parser.parse_args()
+
+    log_dir = None if args.no_log else Path(args.log_dir)
+    if log_dir is not None:
+        print(f"[LOG] auto-save -> {log_dir}")
 
     app = QtWidgets.QApplication(sys.argv)
     win = MainWindow(
@@ -1054,6 +1212,7 @@ def main():
         ws_port=args.ws_port,
         ws_host=args.ws_host,
         ws_token=args.ws_token,
+        log_dir=log_dir,
     )
     win.show()
     sys.exit(app.exec())

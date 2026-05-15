@@ -45,20 +45,29 @@ export function useWebSerial() {
   }, []);
 
   // ---------- 1 行をパース → ref/state へ反映（state はスロットル） ----------
+  //   下位互換: 旧 firmware の 15 列、新 firmware の 17 列（末尾に phase, accel_g）の両方を受理する。
+  //   欠損列はそれぞれ 0 / 計算値で埋める。
   const parseLine = useCallback((line: string) => {
     if (!line) return;
     if (line.startsWith("[") || line.startsWith("#")) return;
     const parts = line.split(",");
-    if (parts.length !== 15) return;
+    if (parts.length < 15) return;
     const n = parts.map((p) => Number(p));
-    if (n.some((v) => Number.isNaN(v))) return;
+    if (n.slice(0, 15).some((v) => Number.isNaN(v))) return;
+
+    const ax = n[3], ay = n[4], az = n[5];
+    const phase = parts.length >= 16 && Number.isFinite(n[15]) ? n[15] : 0;
+    const accel_g = parts.length >= 17 && Number.isFinite(n[16])
+      ? n[16]
+      : Math.sqrt(ax * ax + ay * ay + az * az);
 
     const frame: TelemetryFrame = {
       seq: n[0], t_ms: n[1], dt_ms: n[2],
-      ax: n[3], ay: n[4], az: n[5],
+      ax, ay, az,
       gx: n[6], gy: n[7], gz: n[8],
       roll: n[9], pitch: n[10], yaw: n[11],
       s0: n[12], s1: n[13], s2: n[14],
+      phase, accel_g,
       wall_ms: Date.now(),
     };
 

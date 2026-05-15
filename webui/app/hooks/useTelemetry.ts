@@ -10,8 +10,14 @@ export type TelemetryFrame = {
   gx: number; gy: number; gz: number;
   roll: number; pitch: number; yaw: number;
   s0: number; s1: number; s2: number;
+  // 17列拡張 (firmware v17+)。旧 firmware 接続時は 0 を入れる。
+  phase: number;   // 0=DISARMED, 1=PRELAUNCH, 2=LAUNCH, 3=GLIDE, 4=LANDED
+  accel_g: number; // sqrt(ax^2+ay^2+az^2) [g]
   wall_ms: number;
 };
+
+export const PHASE_NAMES = ["DISARMED", "PRELAUNCH", "LAUNCH", "GLIDE", "LANDED"] as const;
+export type PhaseName = (typeof PHASE_NAMES)[number];
 
 export type Status = "connecting" | "open" | "closed" | "error";
 
@@ -39,6 +45,14 @@ export function useTelemetry(url: string, token?: string) {
   tokenRef.current = token;
 
   const ingest = useCallback((msg: TelemetryFrame) => {
+    // 旧サーバ (phase/accel_g 非送信) との互換: 欠損は 0 で埋める。
+    if (typeof msg.phase !== "number") (msg as any).phase = 0;
+    if (typeof msg.accel_g !== "number") {
+      // ax,ay,az があるなら計算で補う
+      const ax = msg.ax ?? 0, ay = msg.ay ?? 0, az = msg.az ?? 0;
+      (msg as any).accel_g = Math.sqrt(ax * ax + ay * ay + az * az);
+    }
+
     // ref は常に更新
     latestRef.current = msg;
     const arr = historyRef.current;
