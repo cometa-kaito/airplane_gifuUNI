@@ -129,6 +129,22 @@ DISARMED → (arm) → PRELAUNCH → (|a|>launch_g) → LAUNCH (climb-out)
 - **`glide_timeout` ハードタイムアウト** — GLIDE が 20 秒 (既定) を超えたら強制 LANDED。
 - **手動 `land` コマンド / WebUI の 🛬 Land ボタン** — 自動検出に頼らず即座に LANDED へ遷移。
 
+### 風洞試験モード (Step 5b)
+
+風洞で機体を支柱固定して PID 応答を測定する場合、通常のフェーズマシン（投擲検知付き）ではなく独立した `PHASE_WINDTUNNEL` モードを使います。
+
+WebUI: Step 5 の下の **「▸ 5b · Wind Tunnel · 風洞試験モード（代替）」** を展開。
+
+| 抑制される機能 | 理由 |
+|---|---|
+| tilt safeguard | 支柱で大角度に固定する場合があるため |
+| failsafe | 測定中の地上局離席を許容 |
+| climb_ff (feed-forward) | 純粋な PID 応答が見たい |
+| 自動フェーズ遷移 (LAUNCH/LANDED) | 風洞では不要 |
+
+操作: 「🌬 Enter Wind Tunnel」→ target_pitch / target_roll をスイープ → CSV ログを取得 → 「Exit (Disarm)」。
+クイックボタン (±5°、±10°) でステップ応答を素早く取れます。
+
 ### D 項のソース (P0-3)
 
 `d_source` コマンドで切替可能:

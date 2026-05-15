@@ -22,6 +22,7 @@ import { GainPanel } from "./components/GainPanel";
 import { SafetyPanel } from "./components/SafetyPanel";
 import { CalibrationPanel } from "./components/CalibrationPanel";
 import { LaunchPanel } from "./components/LaunchPanel";
+import { WindTunnelPanel } from "./components/WindTunnelPanel";
 import { InfoLogPanel } from "./components/InfoLogPanel";
 import type { TelemetryFrame } from "./hooks/useTelemetry";
 
@@ -282,6 +283,33 @@ export default function Page() {
               enabled={status === "open"}
             />
           </div>
+
+          {/* Step 5b (代替): 風洞試験モード。フライトでは使わない */}
+          <details className="border-t border-glider-border/40 pt-3">
+            <summary className="cursor-pointer select-none flex items-center gap-2 mb-2">
+              <span
+                className="inline-flex items-center justify-center w-6 h-6 rounded-full
+                           border font-bold text-xs font-mono
+                           bg-purple-500/15 text-purple-400 border-purple-500/30"
+                aria-hidden
+              >
+                5b
+              </span>
+              <div className="leading-tight">
+                <div className="text-[13px] font-bold text-glider-text uppercase tracking-wider">
+                  Wind Tunnel · 風洞試験モード（代替）
+                </div>
+                <div className="text-[10px] text-glider-textMute">
+                  風洞でステップ応答や PID 調整をする時のみ展開。フライトでは使わない
+                </div>
+              </div>
+            </summary>
+            <WindTunnelPanel
+              attitudeRef={attitudeRef}
+              onSend={sendCommand}
+              enabled={status === "open"}
+            />
+          </details>
         </div>
 
         {/* ============================================================ */}

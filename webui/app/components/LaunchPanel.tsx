@@ -53,19 +53,21 @@ const LAUNCH_G_PRESETS = [
 ];
 
 const PHASE_COLORS: Record<number, string> = {
-  0: "#64748b",   // DISARMED  gray
-  1: "#f59e0b",   // PRELAUNCH amber
-  2: "#ef4444",   // LAUNCH    red
-  3: "#22c55e",   // GLIDE     green
-  4: "#3b82f6",   // LANDED    blue
+  0: "#64748b",   // DISARMED   gray
+  1: "#f59e0b",   // PRELAUNCH  amber
+  2: "#ef4444",   // LAUNCH     red
+  3: "#22c55e",   // GLIDE      green
+  4: "#3b82f6",   // LANDED     blue
+  5: "#a855f7",   // WINDTUNNEL purple
 };
 
 const PHASE_DESC: Record<number, string> = {
   0: "地上テスト中。failsafe 有効。Arm すると PRELAUNCH に遷移します。",
   1: "投擲待機中。|a| が launch_g を連続超過したら LAUNCH に自動遷移。",
   2: "上昇 (climb-out)。最初の数百 ms は PID ゼロホールド、その後 climb_pitch を目標に制御。",
-  3: "滑空中。glide_pitch を目標に PID 制御。|az| が低い状態が続くと LANDED。",
+  3: "滑空中。glide_pitch を目標に PID 制御。静置検出で LANDED へ。",
   4: "着地検出。サーボ中立、PID 停止。Disarm で DISARMED に戻せます。",
+  5: "風洞試験中。PID 常時稼働 / target 手動 / tilt safeguard・failsafe・climb_ff すべて抑制。",
 };
 
 export function LaunchPanel({

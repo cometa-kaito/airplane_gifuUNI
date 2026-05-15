@@ -16,7 +16,14 @@ export type TelemetryFrame = {
   wall_ms: number;
 };
 
-export const PHASE_NAMES = ["DISARMED", "PRELAUNCH", "LAUNCH", "GLIDE", "LANDED"] as const;
+export const PHASE_NAMES = [
+  "DISARMED",
+  "PRELAUNCH",
+  "LAUNCH",
+  "GLIDE",
+  "LANDED",
+  "WINDTUNNEL",
+] as const;
 export type PhaseName = (typeof PHASE_NAMES)[number];
 
 export type Status = "connecting" | "open" | "closed" | "error";

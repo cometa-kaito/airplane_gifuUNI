@@ -48,7 +48,7 @@ TELEMETRY_FIELDS_CORE = [
 TELEMETRY_FIELDS_EXT = ["phase", "accel_g"]
 TELEMETRY_FIELDS = TELEMETRY_FIELDS_CORE + TELEMETRY_FIELDS_EXT
 TELEMETRY_INT_FIELDS = {"seq", "t_ms", "dt_ms", "s0", "s1", "s2", "phase"}
-PHASE_NAMES = ["DISARMED", "PRELAUNCH", "LAUNCH", "GLIDE", "LANDED"]
+PHASE_NAMES = ["DISARMED", "PRELAUNCH", "LAUNCH", "GLIDE", "LANDED", "WINDTUNNEL"]
 
 
 class SerialIO(QtCore.QObject):
@@ -911,6 +911,21 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_disarm.clicked.connect(lambda: self.serial_io.send_command("disarm"))
         ctl_layout.addWidget(btn_disarm, row, 3)
 
+        # 風洞試験モード: PHASE_WINDTUNNEL へ遷移。PID 常時 ON、safeguards 抑制。
+        btn_wt = QtWidgets.QPushButton("🌬 Wind Tunnel")
+        btn_wt.setMinimumWidth(110)
+        btn_wt.setToolTip(
+            "風洞試験モード（PID 常時 ON、tilt safeguard / failsafe 抑制）。"
+            "target_pitch/roll を手動操作して応答測定する用。"
+        )
+        btn_wt.setStyleSheet(
+            "QPushButton { background: #5b21b6; color: #f0f0f0; "
+            "border-radius: 4px; font-weight: bold; padding: 4px 8px; } "
+            "QPushButton:hover { background: #7c3aed; }"
+        )
+        btn_wt.clicked.connect(lambda: self.serial_io.send_command("wt"))
+        ctl_layout.addWidget(btn_wt, row, 4)
+
         ctl_layout.addWidget(QtWidgets.QLabel("launch_g:"), row, 5)
         self.spin_launch_g = QtWidgets.QDoubleSpinBox()
         self.spin_launch_g.setRange(1.0, 8.0)
@@ -1098,11 +1113,12 @@ class MainWindow(QtWidgets.QMainWindow):
             ph_name = PHASE_NAMES[ph_idx] if 0 <= ph_idx < len(PHASE_NAMES) else f"?{ph_idx}"
             # フェーズに応じた色
             ph_color = {
-                0: "#888888",  # DISARMED  gray
-                1: "#f59f00",  # PRELAUNCH amber
-                2: "#fa5252",  # LAUNCH    red (alert)
-                3: "#37b24d",  # GLIDE     green
-                4: "#5c7cfa",  # LANDED    blue
+                0: "#888888",  # DISARMED   gray
+                1: "#f59f00",  # PRELAUNCH  amber
+                2: "#fa5252",  # LAUNCH     red (alert)
+                3: "#37b24d",  # GLIDE      green
+                4: "#5c7cfa",  # LANDED     blue
+                5: "#a855f7",  # WINDTUNNEL purple
             }.get(ph_idx, "#ffffff")
             self.big_phase.setText(ph_name)
             self.big_phase.setStyleSheet(

@@ -43,7 +43,9 @@
 //    status / help / tlm on / tlm off
 //    failsafe <ms>      アップリンク途絶でフェイルセーフ発動するまでの ms (0 で無効)
 //    arm / disarm       投擲検知の有効化 / 解除（自律滑空モード）
+//    land               強制 LANDED 遷移（手動着地、GLIDE 詰まり脱出）
 //    launch_g <g>       投擲検知しきい値 (既定 2.5g)
+//    wt                 風洞試験モード遷移 (PID 常時 ON、safeguards 抑制)
 // =============================================================
 
 #include <LSM6DS3.h>
@@ -167,11 +169,13 @@ bool  tiltSafeguardTriggered = false;
 //   armed 中 (PHASE_DISARMED 以外) は failsafe を抑制（地上局接続が無くても飛行継続）。
 //   下位互換: `arm` → PRELAUNCH、`disarm` → DISARMED、`launch_g` も従来通り。
 enum FlightPhase {
-  PHASE_DISARMED  = 0,   // arm されていない（地上テスト用、failsafe 有効）
-  PHASE_PRELAUNCH = 1,   // armed、|a| > launch_g を待機（MANUAL ホールド）
-  PHASE_LAUNCH    = 2,   // 投擲検知後 climb_ms まで（climb-out: 機首上げ）
-  PHASE_GLIDE     = 3,   // 滑空（最良滑空 pitch）
-  PHASE_LANDED    = 4,   // 着地検出後（PID 停止、サーボ中立）
+  PHASE_DISARMED   = 0,   // arm されていない（地上テスト用、failsafe 有効）
+  PHASE_PRELAUNCH  = 1,   // armed、|a| > launch_g を待機（MANUAL ホールド）
+  PHASE_LAUNCH     = 2,   // 投擲検知後 climb_ms まで（climb-out: 機首上げ）
+  PHASE_GLIDE      = 3,   // 滑空（最良滑空 pitch）
+  PHASE_LANDED     = 4,   // 着地検出後（PID 停止、サーボ中立）
+  PHASE_WINDTUNNEL = 5,   // 風洞試験: PID 常時 ON / 自動遷移なし / tilt safeguard +
+                          //           failsafe + climb_ff を抑制。target[] を手動操作して応答計測。
 };
 FlightPhase phase = PHASE_DISARMED;
 uint32_t phaseStartMs = 0;
@@ -274,7 +278,7 @@ static float clipf(float v, float lo, float hi) {
 //     - tiltSafeguardTriggered の解除
 //     - 進入メッセージの送出
 static void phaseTransition(FlightPhase newPhase) {
-  static const char* PN[] = {"DISARMED", "PRELAUNCH", "LAUNCH", "GLIDE", "LANDED"};
+  static const char* PN[] = {"DISARMED", "PRELAUNCH", "LAUNCH", "GLIDE", "LANDED", "WINDTUNNEL"};
   if (newPhase == phase) return;  // 自己遷移は無視
   phase = newPhase;
   phaseStartMs = millis();
@@ -305,6 +309,13 @@ static void phaseTransition(FlightPhase newPhase) {
       // 着地: サーボ中立、PID 停止
       baseMode = MODE_MANUAL;
       trimDeg[0] = trimDeg[1] = trimDeg[2] = 0.0f;
+      break;
+    case PHASE_WINDTUNNEL:
+      // 風洞: PID 即起動。target[] (ユーザ設定値) で動かす。tilt safeguard /
+      //       failsafe / climb_ff はすべて他箇所で抑制される。
+      baseMode = MODE_AUTO;
+      autoSub  = SUB_PID;
+      tiltSafeguardTriggered = false;
       break;
   }
 
@@ -384,7 +395,7 @@ static void printStatus() {
     attitudeOffsetActive ? "ACTIVE" : "off",
     attitudeOffset[0], attitudeOffset[1], attitudeOffset[2]);
   radioPrintln(buf);
-  static const char* PHASE_NAMES[] = {"DISARMED", "PRELAUNCH", "LAUNCH", "GLIDE", "LANDED"};
+  static const char* PHASE_NAMES[] = {"DISARMED", "PRELAUNCH", "LAUNCH", "GLIDE", "LANDED", "WINDTUNNEL"};
   snprintf(buf, sizeof(buf),
     "[STATUS] phase=%s launch_g=%.2f climb_ms=%lu climb_pitch=%.1f glide_pitch=%.1f",
     PHASE_NAMES[(int)phase], launchAccelG,
@@ -439,6 +450,11 @@ static void printHelp() {
   radioPrintln("[INFO]   landed_ms <ms>       both conditions sustained for this = LANDED (default 1000)");
   radioPrintln("[INFO]   glide_timeout <ms>   hard timeout from GLIDE to LANDED (default 20000, 0 disables)");
   radioPrintln("[INFO]   d_source <gyro|err>  D-term source: gyro (default) or err (legacy)");
+  radioPrintln("[INFO] Wind tunnel test mode:");
+  radioPrintln("[INFO]   wt                   enter WINDTUNNEL (PID on, no safeguards, no FF)");
+  radioPrintln("[INFO]   disarm               leave WINDTUNNEL (back to DISARMED)");
+  radioPrintln("[INFO]   target p <deg>       sweep pitch setpoint during WT");
+  radioPrintln("[INFO]   target r <deg>       sweep roll setpoint during WT");
 }
 
 // =============================================================
@@ -619,8 +635,15 @@ static void handleCommandLine(char* line) {
     phaseTransition(PHASE_LANDED);
     return;
   }
+  // 風洞試験モード: PHASE_WINDTUNNEL に遷移。`disarm` で抜ける。
+  //   tilt safeguard / failsafe / climb_ff は WT 中すべて抑制される。
+  //   target_pitch / target_roll をユーザが手動操作して PID 応答を計測する。
+  if (iequals(cmd, "wt") || iequals(cmd, "wt_mode") || iequals(cmd, "windtunnel")) {
+    phaseTransition(PHASE_WINDTUNNEL);
+    return;
+  }
   if (iequals(cmd, "phase")) {
-    static const char* PN[] = {"DISARMED","PRELAUNCH","LAUNCH","GLIDE","LANDED"};
+    static const char* PN[] = {"DISARMED","PRELAUNCH","LAUNCH","GLIDE","LANDED","WINDTUNNEL"};
     char buf[64];
     snprintf(buf, sizeof(buf), "[PHASE] %s (in %lums)",
       PN[(int)phase], (unsigned long)(millis() - phaseStartMs));
@@ -815,8 +838,8 @@ void loop() {
 
   // ---- フェイルセーフ判定 ----
   //   PHASE_DISARMED （= 地上テスト中、つまり通常の地上局運用）でのみ有効。
-  //   PRELAUNCH/LAUNCH/GLIDE/LANDED 中は地上局通信が無くても飛行を継続/着陸させたい
-  //   ので failsafe をスキップする。解除するには `disarm` を打つ。
+  //   PRELAUNCH/LAUNCH/GLIDE/LANDED/WINDTUNNEL 中は地上局通信が無くても運用を継続
+  //   させたい（飛行中の uplink loss / 風洞中の測定者離席）。`disarm` で抜ける。
   if (phase == PHASE_DISARMED && failsafeTimeoutMs > 0
       && (uint32_t)(millis() - lastUplinkMs) > failsafeTimeoutMs) {
     if (!failsafeActive) {
@@ -901,7 +924,7 @@ void loop() {
       }
     } break;
     default:
-      // DISARMED / LANDED は遷移なし（手動で disarm/arm 操作するまで）
+      // DISARMED / LANDED / WINDTUNNEL は遷移なし（手動 disarm/arm/wt 操作で抜ける）
       break;
   }
 
@@ -933,8 +956,11 @@ void loop() {
   //   Madgwick の roll 出力は [-180,+180] のため |roll| は最大 180、
   //   浮動小数誤差で 180.0000xf が出る場合があり、`> 180` 比較が境界で
   //   誤動作する可能性があるため、しきい値は厳密に (0, 180) の範囲でのみ有効。
+  // 風洞 (PHASE_WINDTUNNEL) では支柱固定で角度が大きくなる場合があるため
+  // tilt safeguard は抑制する。
   if (tiltSafeguardDeg > 0.0f && tiltSafeguardDeg < 180.0f
-      && baseMode == MODE_AUTO && !tiltSafeguardTriggered) {
+      && baseMode == MODE_AUTO && !tiltSafeguardTriggered
+      && phase != PHASE_WINDTUNNEL) {
     float ar = fabsf(Q[0]);
     float ap = fabsf(Q[1]);
     float tiltMax = ar > ap ? ar : ap;

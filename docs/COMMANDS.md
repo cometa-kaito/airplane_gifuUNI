@@ -85,6 +85,7 @@
 | `landed_ms <ms>` | `landed_g` と `landed_gyro` の両方が連続成立する必要時間 [ms]。既定 1000、範囲 100..10000 |
 | `glide_timeout <ms>` | GLIDE 持続のハードタイムアウト [ms]。これを超えたら強制 LANDED。既定 20000、`0` で無効 |
 | `d_source <gyro\|error>` | D 項の計算ソース。**既定 gyro**（Lesson17 推奨。ジャイロ生値を直接使用）。`error` で従来の `(e-prevE)/dt + dfilter` に戻る |
+| `wt` / `wt_mode` / `windtunnel` | **風洞試験モードへ遷移** (PHASE_WINDTUNNEL)。PID 常時 ON、target は `target p`/`target r` でユーザ操作。tilt safeguard・failsafe・climb_ff すべて抑制。`disarm` で抜ける |
 
 ### 取付角キャリブレーション (`zero`)
 
@@ -273,7 +274,51 @@ arm                 ← DISARMED → PRELAUNCH
 disarm              ← LANDED → DISARMED
 ```
 
-**重要な振る舞い**:
+## 風洞試験モード (`wt`)
+
+ゴム射出の代わりに、機体を風洞の支柱に固定して PID 応答を測定する用途。
+通常のフェーズマシン (DISARMED→PRELAUNCH→...) には乗らず、独立したフェーズ
+`PHASE_WINDTUNNEL = 5` に入る。
+
+```
+# 1. 機体を風洞内に固定（水平 or 任意の取付角）
+# 2. キャリブレーション
+zero
+
+# 3. PID ゲイン設定 (通常通り)
+kp p 1.0
+ki p 0.2
+kd p 0.05
+
+# 4. 風洞モードへ
+wt                    ← PID 起動、tilt safeguard / failsafe / climb_ff すべて抑制
+                      # → [PHASE] -> WINDTUNNEL
+
+# 5. ステップ応答を取りたければ target を順次変更
+target p 0
+target p 5            ← 0→+5° のステップ
+target p 0            ← 整定後、戻す
+target p -5
+target p 0
+target r 5            ← roll も同様にスイープ可能
+
+# 6. 終了
+disarm                ← DISARMED に戻り、tilt safeguard / failsafe 復活
+```
+
+**振る舞い**:
+- **PID 常時 ON**: 通常の `auto/3` (PID) と同じ動作。
+- **target は静的**: `currentTargetPitch()` は phase==WT のとき `target[1]` (ユーザ値) を返す。climb_pitch / glide_pitch は使われない。
+- **climb_ff = 0**: エレベータ feed-forward オフセット無し。
+- **tilt safeguard 抑制**: 支柱固定で大角度になっても MANUAL に落ちない。
+- **failsafe 抑制**: 測定中の離席を許容（地上局接続が落ちても PID 継続）。
+- **launch 検出無効**: 高 G の入力があっても遷移しない（風洞では関係ない）。
+- **着地検出無効**: 静置状態でも勝手に LANDED に遷移しない。
+
+CSV ログには `phase=5` の列が記録されるので、応答プロット時に WT 区間を抽出できる。
+
+## 投擲フローでの重要な振る舞い
+
 - **armed 中 (DISARMED 以外) は failsafe 抑制** — 地上局接続が落ちても飛行/着陸まで継続。
 - **LAUNCH 直後の 500ms は PID ゼロホールド** — Madgwick が投擲ショックから復帰する猶予。この間も feed-forward（climb_ff）はエレベータに加算されるので機首上げ姿勢は維持される。
 - **LAUNCH 中のエレベータ feed-forward** — PID 出力に加えて `climb_ff`（既定 +5°）を加算し、機首上げを素早く実現。
