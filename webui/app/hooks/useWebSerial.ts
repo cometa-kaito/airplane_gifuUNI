@@ -33,6 +33,8 @@ export function useWebSerial() {
   const readerRef = useRef<any>(null);
   const writerRef = useRef<any>(null);
   const stopFlagRef = useRef(false);
+  // 受信ループ完了を await できるようにする（disconnect で待ち合わせ用）
+  const readLoopDoneRef = useRef<Promise<void> | null>(null);
 
   // SSR 対応: 初期は false、マウント後に navigator.serial の有無を判定
   const [supported, setSupported] = useState(false);
@@ -125,10 +127,8 @@ export function useWebSerial() {
 
       setStatus("open");
 
-      // 別プロミスで受信ループ開始（await しない）
-      readLoop(port).then(() => {
-        setStatus("closed");
-      });
+      // 受信ループは別プロミスで起動（disconnect 時に await できるよう保持）
+      readLoopDoneRef.current = readLoop(port);
     } catch (e) {
       setStatus("error");
       throw e;
@@ -136,13 +136,40 @@ export function useWebSerial() {
   }, [supported, readLoop]);
 
   // ---------- 切断 ----------
+  // ポイント:
+  //   port.close() は readable / writable のロックがすべて解放されてからでないと
+  //   失敗（→ OS レベルでポートを掴んだまま）になる。
+  //   そのため reader.cancel → 読み込みループ終了待ち → writer.releaseLock の順で
+  //   await してから close する。
   const disconnect = useCallback(async () => {
     stopFlagRef.current = true;
-    try { readerRef.current?.cancel(); } catch {}
-    try { writerRef.current?.releaseLock(); } catch {}
-    writerRef.current = null;
+
+    // 1) reader をキャンセル（pending な reader.read() を {done:true} で resolve させる）
+    if (readerRef.current) {
+      try { await readerRef.current.cancel(); } catch {}
+    }
+
+    // 2) 読み込みループの finally まで完了させる（reader.releaseLock() が中で走る）
+    if (readLoopDoneRef.current) {
+      try { await readLoopDoneRef.current; } catch {}
+      readLoopDoneRef.current = null;
+    }
+    readerRef.current = null;
+
+    // 3) writer のロックを解放
+    if (writerRef.current) {
+      try { writerRef.current.releaseLock(); } catch {}
+      writerRef.current = null;
+    }
+
+    // 4) ここまで来れば readable/writable 双方のロックが空、port.close() が成功する
     if (portRef.current) {
-      try { await portRef.current.close(); } catch {}
+      try {
+        await portRef.current.close();
+      } catch (e) {
+        // ロック解放が間に合わなかった等で失敗した場合はログだけ残す
+        console.warn("[useWebSerial] port.close() failed:", e);
+      }
       portRef.current = null;
     }
     setStatus("closed");

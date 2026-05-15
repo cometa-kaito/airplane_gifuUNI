@@ -49,20 +49,38 @@
 
 ### 1. Arduino IDE で 3 つのスケッチを書き込む
 - `arduino/glider_nRF52840/glider_nRF52840.ino` → nRF52840 Sense
-- `arduino/glider_ESP32C3_aircraft/glider_ESP32C3_aircraft.ino` → ESP32-C3 #2
-- `arduino/glider_ESP32C3_ground/glider_ESP32C3_ground.ino` → ESP32-C3 #1
+- `arduino/glider_ESP32C3_aircraft/glider_ESP32C3_aircraft.ino` → 機体側 ESP32-C3
+- `arduino/glider_ESP32C3_ground/glider_ESP32C3_ground.ino` → 地上側 ESP32-C3
 
-### 2. Python ビューアを起動
+書き込み前に各 ESP32 スケッチフォルダの `secrets.example.h` を `secrets.h` にコピーし、PMK / LMK を自分で生成した値に書き換える（機体・地上で同じ値）。
+
+### 2. ペアリング（初回のみ）
+両 ESP32-C3 をシリアルモニタに繋ぎ、`/mac` で MAC を確認。  
+それぞれで `/setpeer XX:XX:XX:XX:XX:XX`（相手の MAC）を打つと NVS に保存され自動再起動する。
+
+### 3. Python 地上局を起動
 ```powershell
 # 仮想環境を有効化（初回のみ作成、詳細は docs/SETUP.md）
 .\.venv\Scripts\activate
 
-# 3D ビューア（高機能版）
+# 地上局（PyQt UI + 3D ペイン + WebSocket サーバ。WebUI からの操作も可能）
+python python_viewer\ground_station.py --port COM12
+
+# 3D ビューア単独版（テレメトリ閲覧のみ）
 python python_viewer\glider_viewer3d.py --port COM12 --preset default
 
 # 標準 2D ビューア（生データ可視化）
 python python_viewer\viewer_serialsend.py --port COM12
 ```
+
+### 4. （任意）WebUI を立ち上げる
+```powershell
+cd webui
+npm install
+npm run dev
+# ブラウザで http://localhost:3000
+```
+WebSocket モードでコマンド操作したい場合は ground_station 側で **「Accept WS commands」** チェックボックスを ON にする。
 
 ## 詳細ドキュメント
 

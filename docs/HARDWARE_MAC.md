@@ -1,26 +1,27 @@
 # ハードウェア・MAC アドレス一覧
 
+> ⚠️ MAC アドレスは **基板ごとに固有の値**。下表はサンプル記載なので、自分のボードの値を `/mac` コマンドで確認して書き換えること。
+> もはやコードに直書きしない（NVS でランタイム保存される）ので、表は記録用。
+
 ## ボード構成
 
-| 役割 | ボード | MAC アドレス | 接続 | スケッチ |
+| 役割 | ボード | MAC アドレス（記録用） | 接続 | スケッチ |
 |---|---|---|---|---|
 | 機体制御 | XIAO nRF52840 Sense | （MAC は使わない） | サーボ D0/D1/D2、Serial1 D6/D7、USB | `glider_nRF52840.ino` |
-| 機体側 無線中継 | XIAO ESP32-C3 #2 | `94:A9:90:6D:52:50` | nRF52840 と Serial1（D6/D7）、機体内に搭載 | `glider_ESP32C3_aircraft.ino` |
-| 地上側 無線中継 | XIAO ESP32-C3 #1 | `58:8C:81:AE:E0:60` | PC に USB | `glider_ESP32C3_ground.ino` |
+| 機体側 無線中継 | XIAO ESP32-C3 #2 | `XX:XX:XX:XX:XX:XX` | nRF52840 と Serial1（D6/D7）、機体内に搭載 | `glider_ESP32C3_aircraft.ino` |
+| 地上側 無線中継 | XIAO ESP32-C3 #1 | `XX:XX:XX:XX:XX:XX` | PC に USB | `glider_ESP32C3_ground.ino` |
 
-## peerMac の指定方向
+## ペアリング手順（NVS 方式）
 
-ESP-NOW は**相手の MAC を指定する片方向アドレッシング**。各ボードには「相手」の MAC を入れる：
+1. 両機の ESP32-C3 をそれぞれ USB で PC に繋ぎ、シリアルモニタで `/mac` を打って自分の MAC を確認・記録する。
+2. **地上側** のシリアルモニタで `/setpeer XX:XX:XX:XX:XX:XX`（= 機体側の MAC）を実行。NVS に保存後、自動で再起動する。
+3. **機体側** のシリアルモニタで `/setpeer XX:XX:XX:XX:XX:XX`（= 地上側の MAC）を実行。同じく自動再起動。
+4. 以降、再フラッシュしても NVS に値が残るので peerMac の書き換えは不要。
+5. 別の機体ペアにしたい場合は `/unpair` で NVS をクリアして再ペアリング。
 
-```
-ground (#1) -----送信先指定-----> aircraft (#2)
-   peerMac = 94:A9:90:6D:52:50
-   コード: const uint8_t peerMac[6] = {0x94, 0xA9, 0x90, 0x6D, 0x52, 0x50};
+## チャネル変更
 
-aircraft (#2) -----送信先指定-----> ground (#1)
-   peerMac = 58:8C:81:AE:E0:60
-   コード: const uint8_t peerMac[6] = {0x58, 0x8C, 0x81, 0xAE, 0xE0, 0x60};
-```
+混信時は `/channel <1-13>` で Wi-Fi チャネルを変更可能。両機で同じ値にすること。
 
 ## サーボ配置（エルロン構成）
 
@@ -37,4 +38,15 @@ aircraft (#2) -----送信先指定-----> ground (#1)
 
 ## ボードを買い直した／取り違えたとき
 
-`Lesson11/Lesson11.ino` をどちらか一方の ESP32-C3 に書き込んでシリアルモニタに `/mac` と送ると、自機の MAC が表示される。それを上の表とコード（`peerMac`）の両方に反映する。
+`glider_ESP32C3_ground.ino` または `glider_ESP32C3_aircraft.ino` を書き込んでシリアルモニタを開き、`/mac` を送ると自機・相手機の MAC が `[MAC] self=... peer=... ch=...` の形で表示される。  
+あとは「ペアリング手順」に沿って `/setpeer` を打てば、再フラッシュ不要で組み合わせを切り替えられる。
+
+## 暗号化鍵について
+
+ESP-NOW の通信は AES で暗号化されている。鍵は各スケッチフォルダの `secrets.h` に定義（PMK / LMK 各 16 バイト）。  
+**機体側 / 地上側の `secrets.h` は同じ値**にすること。`secrets.h` は `.gitignore` で Git に上がらない。配布時は `secrets.example.h` をコピーして自分で生成した値に書き換える。
+
+```bash
+# 鍵の生成例
+openssl rand -hex 16
+```

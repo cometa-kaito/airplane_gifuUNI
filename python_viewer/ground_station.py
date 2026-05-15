@@ -4,16 +4,16 @@ ground_station.py
 自律滑空機 地上局メインアプリ
 
 役割:
-  - 地上側 ESP32-C3 #1 の USB シリアルを所有
-  - PyQt6 + pyqtgraph で操作 UI（ボタン・スライダ）と高速グラフを表示
+  - 地上側 ESP32-C3 の USB シリアルを所有
+  - PyQt6 + pyqtgraph で操作 UI・高速グラフ・3D 姿勢ビューを表示
   - WebSocket サーバとしてテレメトリを JSON ブロードキャスト
-    -> Next.js 等の表示専用クライアントが接続可能
+  - WS クライアントからのコマンド受信（既定 OFF、UI チェックボックス or トークンで許可）
 
 使い方:
-  python ground_station.py --port COM12 [--ws-port 8765]
+  python ground_station.py --port COM12 [--ws-port 8765] [--ws-host 127.0.0.1] [--ws-token <secret>]
 
 依存:
-  pip install PyQt6 pyqtgraph pyserial websockets
+  pip install PyQt6 pyqtgraph pyserial websockets PyOpenGL
 """
 
 import argparse
@@ -25,6 +25,7 @@ import time
 from collections import deque
 
 import pyqtgraph as pg
+import pyqtgraph.opengl as gl
 from PyQt6 import QtCore, QtGui, QtWidgets
 from serial import Serial, SerialException
 
@@ -127,15 +128,28 @@ class SerialIO(QtCore.QObject):
 
 
 # ------------------------------------------------------------------
-# WebSocket ブロードキャスタ
+# WebSocket ブロードキャスタ + コマンド受信
 # ------------------------------------------------------------------
-class WebSocketBroadcaster:
-    """別スレッドで asyncio loop を回し、テレメトリ JSON を全クライアントへ送信。"""
+class WebSocketServer:
+    """別スレッドで asyncio loop を回し、テレメトリ JSON を全クライアントへ送信する。
+    クライアントから {"cmd": "..."} を受信したらコールバックでシリアルへ転送する。
+    認可は (a) UI のチェックボックス (b) 必須トークン の AND で行う。
+    """
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8765):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8765,
+        token: str | None = None,
+        on_command=None,
+    ):
         self.host = host
         self.port = port
+        self.token = token  # None なら認証なし
+        self.on_command = on_command  # callable(cmd: str)
+        self.allow_commands = False  # UI 側から動的に切り替える
         self._clients: set = set()
+        self._authed: set = set()
         self._loop = None
         self._lock = threading.Lock()
 
@@ -149,20 +163,57 @@ class WebSocketBroadcaster:
 
     async def _serve(self):
         async with websockets.serve(self._handle, self.host, self.port):
-            print(f"[WS] listening on ws://{self.host}:{self.port}")
+            print(f"[WS] listening on ws://{self.host}:{self.port}"
+                  f"  token={'required' if self.token else 'none'}")
             await asyncio.Future()  # keep running
 
     async def _handle(self, websocket):
         with self._lock:
             self._clients.add(websocket)
+        # 認証なしの場合は最初から authed
+        if self.token is None:
+            self._authed.add(websocket)
         try:
-            async for _ in websocket:
-                pass  # 受信は無視（表示専用クライアントを想定）
+            async for raw in websocket:
+                await self._on_message(websocket, raw)
         except Exception:
             pass
         finally:
             with self._lock:
                 self._clients.discard(websocket)
+                self._authed.discard(websocket)
+
+    async def _on_message(self, websocket, raw):
+        try:
+            msg = json.loads(raw)
+        except Exception:
+            return
+
+        # 認証
+        if "auth" in msg and self.token is not None:
+            if str(msg["auth"]) == self.token:
+                self._authed.add(websocket)
+                await websocket.send(json.dumps({"ok": True, "authed": True}))
+            else:
+                await websocket.send(json.dumps({"ok": False, "error": "bad token"}))
+            return
+
+        # コマンド
+        cmd = msg.get("cmd")
+        if not cmd:
+            return
+        if websocket not in self._authed:
+            await websocket.send(json.dumps({"ok": False, "error": "auth required"}))
+            return
+        if not self.allow_commands:
+            await websocket.send(json.dumps({"ok": False, "error": "commands disabled by server"}))
+            return
+        if self.on_command:
+            try:
+                self.on_command(str(cmd))
+                await websocket.send(json.dumps({"ok": True, "cmd": cmd}))
+            except Exception as e:
+                await websocket.send(json.dumps({"ok": False, "error": str(e)}))
 
     def broadcast(self, payload: dict):
         if self._loop is None:
@@ -182,13 +233,135 @@ class WebSocketBroadcaster:
 
 
 # ------------------------------------------------------------------
+# 3D 姿勢ペイン（pyqtgraph.opengl ベース）
+# ------------------------------------------------------------------
+class Glider3DPane(gl.GLViewWidget):
+    """簡素な機体モデル（胴体+主翼+尾翼）を roll/pitch/yaw に応じて回転表示する。
+    座標系: +Y=前進方向, +X=右翼方向, +Z=上方向（pyqtgraph.opengl の既定 Z-up）。
+    """
+
+    def __init__(self):
+        super().__init__()
+        # カメラを機体の前方やや上から見下ろす標準角度に固定
+        self.setCameraPosition(distance=8.5, elevation=22, azimuth=-65)
+        self.opts["fov"] = 50
+        self.setBackgroundColor((22, 26, 32))
+
+        # 地面グリッド（x-y 平面、Z=-1.0 に降ろして機体と被らないように）
+        grid = gl.GLGridItem()
+        grid.setSize(20, 20)
+        grid.setSpacing(2, 2)
+        grid.setColor((110, 120, 135, 200))
+        grid.translate(0, 0, -1.0)
+        self.addItem(grid)
+
+        # 機軸を示す参照矢印
+        try:
+            ax_x = gl.GLLinePlotItem(
+                pos=[[0, 0, -1.0], [3, 0, -1.0]],
+                color=(1.0, 0.4, 0.4, 0.8), width=2, antialias=True,
+            )
+            ax_y = gl.GLLinePlotItem(
+                pos=[[0, 0, -1.0], [0, 3, -1.0]],
+                color=(0.4, 1.0, 0.4, 0.8), width=2, antialias=True,
+            )
+            self.addItem(ax_x)
+            self.addItem(ax_y)
+        except Exception:
+            pass
+
+        # 機体パーツ（meshdata は Y+ 前進、X+ 右翼、Z+ 上）
+        self._parts = []
+        self._make_body()
+
+        # 共有 transform（毎フレーム置き換える）
+        self._cur_attitude = (0.0, 0.0, 0.0)
+
+    def _add_box(self, sx, sy, sz, color, offset=(0, 0, 0)):
+        """中心原点の単位 cube を引数サイズに拡大、offset 平行移動して追加。"""
+        verts, faces = _unit_cube_mesh()
+        md = gl.MeshData(vertexes=verts, faces=faces)
+        item = gl.GLMeshItem(
+            meshdata=md,
+            smooth=False,
+            color=color,
+            shader="shaded",
+            glOptions="opaque",
+        )
+        item.scale(sx, sy, sz)
+        item.translate(offset[0], offset[1], offset[2])
+        self.addItem(item)
+        self._parts.append((item, sx, sy, sz, offset))
+        return item
+
+    def _make_body(self):
+        # 胴体: 細長い箱、Y 方向に長い
+        self._add_box(0.25, 3.0, 0.25, (0.85, 0.86, 0.90, 1.0))
+        # 主翼: 左右に広い箱（X 方向に span）
+        self._add_box(5.0, 0.8, 0.06, (1.0, 0.85, 0.20, 1.0), offset=(0, 0.2, 0.05))
+        # 水平尾翼
+        self._add_box(1.5, 0.4, 0.04, (1.0, 0.55, 0.15, 1.0), offset=(0, -1.3, 0.05))
+        # 垂直尾翼
+        self._add_box(0.04, 0.5, 0.5, (0.88, 0.20, 0.20, 1.0), offset=(0, -1.3, 0.30))
+        # ノーズ（球）
+        try:
+            md = gl.MeshData.sphere(rows=8, cols=12, radius=0.18)
+            nose = gl.GLMeshItem(meshdata=md, smooth=True,
+                                 color=(0.95, 0.95, 0.98, 1.0),
+                                 shader="shaded", glOptions="opaque")
+            nose.translate(0, 1.5, 0)
+            self.addItem(nose)
+            self._parts.append((nose, 1.0, 1.0, 1.0, (0, 1.5, 0)))
+        except Exception:
+            pass
+
+    def update_attitude(self, roll_deg: float, pitch_deg: float, yaw_deg: float):
+        """全パーツに同じ回転変換を適用する。"""
+        # Z-up 座標で yaw -> Z, pitch -> X, roll -> Y の順
+        t = QtGui.QMatrix4x4()
+        t.rotate(yaw_deg, 0, 0, 1)
+        t.rotate(pitch_deg, 1, 0, 0)
+        t.rotate(roll_deg, 0, 1, 0)
+        for item, sx, sy, sz, off in self._parts:
+            local = QtGui.QMatrix4x4()
+            local.translate(off[0], off[1], off[2])
+            local.scale(sx, sy, sz)
+            item.setTransform(t * local)
+        self._cur_attitude = (roll_deg, pitch_deg, yaw_deg)
+
+
+def _unit_cube_mesh():
+    """中心原点の 1×1×1 cube の頂点と三角形面を返す。"""
+    import numpy as np
+    v = np.array([
+        [-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5],  [0.5, -0.5, 0.5],  [0.5, 0.5, 0.5],  [-0.5, 0.5, 0.5],
+    ])
+    f = np.array([
+        [0, 1, 2], [0, 2, 3],   # 底
+        [4, 6, 5], [4, 7, 6],   # 上
+        [0, 5, 1], [0, 4, 5],   # -Y
+        [2, 6, 7], [2, 7, 3],   # +Y
+        [1, 5, 6], [1, 6, 2],   # +X
+        [0, 3, 7], [0, 7, 4],   # -X
+    ])
+    return v, f
+
+
+# ------------------------------------------------------------------
 # メインウィンドウ
 # ------------------------------------------------------------------
 HISTORY = 300
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, port: str, ws_port: int):
+    def __init__(
+        self,
+        port: str,
+        ws_port: int,
+        ws_host: str = "127.0.0.1",
+        ws_token: str | None = None,
+    ):
         super().__init__()
         self.setWindowTitle("Glider Ground Station")
         self.resize(1280, 800)
@@ -202,15 +375,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.history = {f: deque(maxlen=HISTORY) for f in TELEMETRY_FIELDS}
         self.history["wall_t"] = deque(maxlen=HISTORY)
 
-        # WebSocket
-        self.ws = WebSocketBroadcaster(port=ws_port)
-        self.ws.start()
-
-        # シリアル
+        # シリアル（WS のコマンドコールバックから参照する都合上、先に作る）
         self.serial_io = SerialIO(port)
         self.serial_io.new_telemetry.connect(self.on_telemetry)
         self.serial_io.new_info.connect(self.on_info)
         self.serial_io.link_status.connect(self.on_link_status)
+
+        # WebSocket（コマンド受信は UI のチェックボックスで gating）
+        self.ws = WebSocketServer(
+            host=ws_host,
+            port=ws_port,
+            token=ws_token,
+            on_command=self._on_ws_command,
+        )
+        self.ws.start()
 
         # UI 構築
         self._build_ui()
@@ -219,6 +397,21 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.serial_io.start():
             QtWidgets.QMessageBox.critical(self, "Error", f"Cannot open {port}")
             sys.exit(1)
+
+    def _on_ws_command(self, cmd: str):
+        """WebSocket クライアントから受け取ったコマンドをシリアルへ転送（UI スレッド経由）。"""
+        # 別スレッド（asyncio）から呼ばれるので、Qt スレッドへキューイング
+        QtCore.QMetaObject.invokeMethod(
+            self,
+            "_dispatch_ws_command",
+            QtCore.Qt.ConnectionType.QueuedConnection,
+            QtCore.Q_ARG(str, cmd),
+        )
+
+    @QtCore.pyqtSlot(str)
+    def _dispatch_ws_command(self, cmd: str):
+        self.serial_io.send_command(cmd)
+        self.log.appendPlainText(f"[WS] > {cmd}")
 
     # =========================================================
     # UI ビルド
@@ -231,21 +424,34 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # ステータス行（固定高さ）
         outer.addWidget(self._build_status_bar())
+        # 大きい数値読み取りパネル（瞬時把握用）
+        outer.addWidget(self._build_big_readout())
 
-        # 縦 Splitter で プロット / 操作 / ログ を可変分割
+        # 縦 Splitter で 上段（プロット+3D） / 操作 / ログ を可変分割
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(6)
 
-        splitter.addWidget(self._build_plots())
+        # 上段は横 Splitter にして左=プロット / 右=3D
+        top = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        top.setChildrenCollapsible(False)
+        top.setHandleWidth(6)
+        top.addWidget(self._build_plots())
+        self.pane3d = Glider3DPane()
+        top.addWidget(self.pane3d)
+        top.setStretchFactor(0, 3)
+        top.setStretchFactor(1, 2)
+        top.setSizes([720, 480])
+
+        splitter.addWidget(top)
         splitter.addWidget(self._build_controls_scroll())
         splitter.addWidget(self._build_log())
 
-        # 初期サイズ比 (plots : controls : log = 5 : 3 : 2)
-        splitter.setStretchFactor(0, 5)
-        splitter.setStretchFactor(1, 3)
-        splitter.setStretchFactor(2, 2)
-        splitter.setSizes([520, 240, 120])
+        # 初期サイズ比 (top : controls : log = 7 : 4 : 1)
+        splitter.setStretchFactor(0, 7)
+        splitter.setStretchFactor(1, 4)
+        splitter.setStretchFactor(2, 1)
+        splitter.setSizes([460, 280, 80])
 
         outer.addWidget(splitter, 1)
         self.setCentralWidget(central)
@@ -292,52 +498,145 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lbl_rx = QtWidgets.QLabel("RX: 0  bad: 0")
         self.lbl_seq = QtWidgets.QLabel("seq: -")
         self.lbl_dt = QtWidgets.QLabel("dt: - ms")
-        self.lbl_ws = QtWidgets.QLabel(f"WS: ws://localhost:{self.ws.port}")
+        self.lbl_ws = QtWidgets.QLabel(f"WS: ws://{self.ws.host}:{self.ws.port}")
 
-        for w in (self.lbl_link, self.lbl_rx, self.lbl_seq, self.lbl_dt, self.lbl_ws):
+        # WS からのコマンド受信を許可するゲート（既定 OFF）
+        self.chk_ws_cmd = QtWidgets.QCheckBox("Accept WS commands")
+        self.chk_ws_cmd.setChecked(False)
+        self.chk_ws_cmd.toggled.connect(
+            lambda checked: setattr(self.ws, "allow_commands", checked)
+        )
+
+        for w in (self.lbl_link, self.lbl_rx, self.lbl_seq, self.lbl_dt, self.lbl_ws,
+                  self.chk_ws_cmd):
             row.addWidget(w)
+        row.addStretch(1)
+        return wrap
+
+    # ---- 大きい数値読み取り（瞬時把握用） ----
+    def _build_big_readout(self) -> QtWidgets.QWidget:
+        wrap = QtWidgets.QFrame()
+        wrap.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        wrap.setStyleSheet(
+            "QFrame { background: #14171c; border-radius: 4px; }"
+        )
+        row = QtWidgets.QHBoxLayout(wrap)
+        row.setContentsMargins(8, 6, 8, 6)
+        row.setSpacing(14)
+
+        def cell(name: str, color: str, unit: str = "°"):
+            v = QtWidgets.QVBoxLayout()
+            v.setSpacing(0)
+            v.setContentsMargins(0, 0, 0, 0)
+            lbl_name = QtWidgets.QLabel(name)
+            lbl_name.setStyleSheet(f"color: {color}; font-size: 11px;")
+            lbl_val = QtWidgets.QLabel("--")
+            lbl_val.setStyleSheet(
+                f"color: {color}; font-family: Consolas, monospace; "
+                f"font-size: 22px; font-weight: bold;"
+            )
+            lbl_val.setMinimumWidth(110)
+            v.addWidget(lbl_name)
+            v.addWidget(lbl_val)
+            wrap_inner = QtWidgets.QWidget()
+            wrap_inner.setLayout(v)
+            row.addWidget(wrap_inner)
+            return lbl_val, unit
+
+        self.big_roll,  _ = cell("ROLL",  "#ff6b6b")
+        self.big_pitch, _ = cell("PITCH", "#51cf66")
+        self.big_yaw,   _ = cell("YAW",   "#4dabf7")
+
+        # 区切り
+        sep = QtWidgets.QFrame()
+        sep.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+        sep.setStyleSheet("color: #333;")
+        row.addWidget(sep)
+
+        self.big_s0, _ = cell("S0 (R Aileron)", "#ff922b")
+        self.big_s1, _ = cell("S1 (L Aileron)", "#ffd43b")
+        self.big_s2, _ = cell("S2 (Elevator)",  "#a9e34b")
+
+        # MODE 表示
+        sep2 = QtWidgets.QFrame()
+        sep2.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+        sep2.setStyleSheet("color: #333;")
+        row.addWidget(sep2)
+
+        v = QtWidgets.QVBoxLayout()
+        v.setSpacing(0)
+        v.setContentsMargins(0, 0, 0, 0)
+        lbl_name = QtWidgets.QLabel("MODE")
+        lbl_name.setStyleSheet("color: #c0c8d4; font-size: 11px;")
+        self.big_mode = QtWidgets.QLabel("?")
+        self.big_mode.setStyleSheet(
+            "color: #ffffff; font-family: Consolas, monospace; "
+            "font-size: 22px; font-weight: bold;"
+        )
+        self.big_mode.setMinimumWidth(140)
+        v.addWidget(lbl_name)
+        v.addWidget(self.big_mode)
+        wrap_inner = QtWidgets.QWidget()
+        wrap_inner.setLayout(v)
+        row.addWidget(wrap_inner)
+
         row.addStretch(1)
         return wrap
 
     # ---- プロット群 ----
     def _build_plots(self) -> QtWidgets.QWidget:
-        pg.setConfigOptions(antialias=True, background="#1a1d22", foreground="#e0e6ed")
+        pg.setConfigOptions(antialias=True, background="#1a1d22", foreground="#cfd5dc")
         plots = pg.GraphicsLayoutWidget()
-        plots.setMinimumHeight(280)
+        plots.setMinimumHeight(220)
         plots.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Expanding,
         )
 
-        self.plot_attitude = plots.addPlot(title="Attitude (deg)", row=0, col=0)
-        self.plot_attitude.addLegend()
-        self.plot_attitude.setYRange(-180, 180)
+        # 共通スタイル：タイトルを小さくして縦スペースを稼ぐ
+        title_style = {"color": "#cfd5dc", "size": "10pt"}
+
+        self.plot_attitude = plots.addPlot(row=0, col=0)
+        self.plot_attitude.setTitle("Attitude (deg)", **title_style)
+        self.plot_attitude.addLegend(offset=(8, 4), labelTextSize="9pt")
+        self.plot_attitude.setYRange(-200, 200)
+        self.plot_attitude.showGrid(x=True, y=True, alpha=0.18)
         self.curve_roll  = self.plot_attitude.plot(pen=pg.mkPen("#ff6b6b", width=2), name="roll")
         self.curve_pitch = self.plot_attitude.plot(pen=pg.mkPen("#51cf66", width=2), name="pitch")
         self.curve_yaw   = self.plot_attitude.plot(pen=pg.mkPen("#4dabf7", width=2), name="yaw")
 
-        self.plot_servo = plots.addPlot(
-            title="Servo (deg, 0-180)  D0=R Aileron / D1=L Aileron / D2=Elevator",
-            row=0, col=1,
-        )
-        self.plot_servo.addLegend()
+        self.plot_servo = plots.addPlot(row=0, col=1)
+        self.plot_servo.setTitle("Servo (deg)  s0=R / s1=L / s2=Elev", **title_style)
+        self.plot_servo.addLegend(offset=(8, 4), labelTextSize="9pt")
         self.plot_servo.setYRange(0, 180)
-        self.curve_s0 = self.plot_servo.plot(pen=pg.mkPen("#ff922b", width=2), name="s0 (R aileron)")
-        self.curve_s1 = self.plot_servo.plot(pen=pg.mkPen("#ffd43b", width=2), name="s1 (L aileron)")
-        self.curve_s2 = self.plot_servo.plot(pen=pg.mkPen("#a9e34b", width=2), name="s2 (Elevator)")
+        self.plot_servo.showGrid(x=True, y=True, alpha=0.18)
+        self.curve_s0 = self.plot_servo.plot(pen=pg.mkPen("#ff922b", width=2), name="s0")
+        self.curve_s1 = self.plot_servo.plot(pen=pg.mkPen("#ffd43b", width=2), name="s1")
+        self.curve_s2 = self.plot_servo.plot(pen=pg.mkPen("#a9e34b", width=2), name="s2")
 
-        self.plot_accel = plots.addPlot(title="Accel (g)", row=1, col=0)
-        self.plot_accel.addLegend()
+        self.plot_accel = plots.addPlot(row=1, col=0)
+        self.plot_accel.setTitle("Accel (g)", **title_style)
+        self.plot_accel.addLegend(offset=(8, 4), labelTextSize="9pt")
         self.plot_accel.setYRange(-2, 2)
+        self.plot_accel.showGrid(x=True, y=True, alpha=0.18)
         self.curve_ax = self.plot_accel.plot(pen=pg.mkPen("#ff6b6b", width=1.5), name="ax")
         self.curve_ay = self.plot_accel.plot(pen=pg.mkPen("#51cf66", width=1.5), name="ay")
         self.curve_az = self.plot_accel.plot(pen=pg.mkPen("#4dabf7", width=1.5), name="az")
 
-        self.plot_gyro = plots.addPlot(title="Gyro (deg/s)", row=1, col=1)
-        self.plot_gyro.addLegend()
+        self.plot_gyro = plots.addPlot(row=1, col=1)
+        self.plot_gyro.setTitle("Gyro (deg/s)", **title_style)
+        self.plot_gyro.addLegend(offset=(8, 4), labelTextSize="9pt")
+        self.plot_gyro.showGrid(x=True, y=True, alpha=0.18)
         self.curve_gx = self.plot_gyro.plot(pen=pg.mkPen("#ff6b6b", width=1.5), name="gx")
         self.curve_gy = self.plot_gyro.plot(pen=pg.mkPen("#51cf66", width=1.5), name="gy")
         self.curve_gz = self.plot_gyro.plot(pen=pg.mkPen("#4dabf7", width=1.5), name="gz")
+
+        # 4 ペインの最小高さを確保してタイトル切れを防ぐ
+        for p in (self.plot_attitude, self.plot_servo, self.plot_accel, self.plot_gyro):
+            p.setMinimumHeight(110)
 
         return plots
 
@@ -417,22 +716,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def make_btn(text: str, slot, color: str = "#2c3036") -> QtWidgets.QPushButton:
             b = QtWidgets.QPushButton(text)
-            b.setMinimumHeight(54)
-            b.setMinimumWidth(96)
+            b.setMinimumHeight(38)
+            b.setMinimumWidth(88)
             b.setStyleSheet(
-                f"QPushButton {{ font-size: 14px; font-weight: bold; "
-                f"background: {color}; color: #f0f0f0; border-radius: 4px; }} "
+                f"QPushButton {{ font-size: 12px; font-weight: bold; "
+                f"background: {color}; color: #f0f0f0; border-radius: 4px; "
+                f"padding: 2px 6px; }} "
                 f"QPushButton:hover {{ background: #3d434c; }} "
                 f"QPushButton:pressed {{ background: #1a1d22; }}"
             )
             b.clicked.connect(slot)
             return b
 
-        btn_pitch_up = make_btn("↑\nPitch Up",   self._cmd_pitch_up)
-        btn_pitch_dn = make_btn("↓\nPitch Down", self._cmd_pitch_dn)
-        btn_roll_l   = make_btn("←\nRoll L",     self._cmd_roll_l)
-        btn_roll_r   = make_btn("→\nRoll R",     self._cmd_roll_r)
-        btn_center   = make_btn("⊙\nCenter",     self._cmd_center, color="#2b6e3a")
+        btn_pitch_up = make_btn("↑ Pitch Up",   self._cmd_pitch_up)
+        btn_pitch_dn = make_btn("↓ Pitch Dn",   self._cmd_pitch_dn)
+        btn_roll_l   = make_btn("← Roll L",     self._cmd_roll_l)
+        btn_roll_r   = make_btn("Roll R →",     self._cmd_roll_r)
+        btn_center   = make_btn("⊙ Center",     self._cmd_center, color="#2b6e3a")
 
         # D-pad layout (3x3, 中央 col=1 を使う)
         grid.addWidget(btn_pitch_up, 0, 1)
@@ -636,6 +936,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lbl_seq.setText(f"seq: {rec['seq']}")
         self.lbl_dt.setText(f"dt: {rec['dt_ms']} ms")
 
+        # 大きい数値読み取り更新
+        if hasattr(self, "big_roll"):
+            self.big_roll.setText(f"{rec['roll']:+7.1f}°")
+            self.big_pitch.setText(f"{rec['pitch']:+7.1f}°")
+            self.big_yaw.setText(f"{rec['yaw']:+7.1f}°")
+            self.big_s0.setText(f"{rec['s0']:>3d}°")
+            self.big_s1.setText(f"{rec['s1']:>3d}°")
+            self.big_s2.setText(f"{rec['s2']:>3d}°")
+
+        # 3D ペイン更新
+        if hasattr(self, "pane3d"):
+            self.pane3d.update_attitude(rec["roll"], rec["pitch"], rec["yaw"])
+
         # WebSocket 配信
         out = {k: rec[k] for k in TELEMETRY_FIELDS}
         out["wall_ms"] = int(time.time() * 1000)
@@ -644,12 +957,14 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot(str)
     def on_info(self, line: str):
         self.log.appendPlainText(line)
-        # [MODE] xxx を解析して Quick Manual Control の表示を更新
+        # [MODE] xxx を解析して Quick Manual Control / 大読みパネルを更新
         if line.startswith("[MODE]"):
             tokens = line.split(maxsplit=1)
             if len(tokens) >= 2:
                 self.current_mode_text = tokens[1].strip()
                 self._refresh_quick_status()
+                if hasattr(self, "big_mode"):
+                    self.big_mode.setText(self.current_mode_text)
 
     @QtCore.pyqtSlot(bool)
     def on_link_status(self, online: bool):
@@ -696,10 +1011,19 @@ def main():
     parser.add_argument("--port", required=True, help="シリアルポート (例: COM12)")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--ws-port", type=int, default=8765, help="WebSocket ポート")
+    parser.add_argument("--ws-host", default="127.0.0.1",
+                        help="WebSocket バインド先 (LAN 公開時のみ 0.0.0.0)")
+    parser.add_argument("--ws-token", default=None,
+                        help="WS コマンド送信時に必須となるトークン（既定: 認証なし）")
     args = parser.parse_args()
 
     app = QtWidgets.QApplication(sys.argv)
-    win = MainWindow(port=args.port, ws_port=args.ws_port)
+    win = MainWindow(
+        port=args.port,
+        ws_port=args.ws_port,
+        ws_host=args.ws_host,
+        ws_token=args.ws_token,
+    )
     win.show()
     sys.exit(app.exec())
 

@@ -32,6 +32,7 @@
 //    target <axis> <value>
 //    s0 <deg> / s1 <deg> / s2 <deg>   (各サーボの trim、-90..+90)
 //    status / help / tlm on / tlm off
+//    failsafe <ms>      アップリンク途絶でフェイルセーフ発動するまでの ms (0 で無効)
 // =============================================================
 
 #include <LSM6DS3.h>
@@ -42,6 +43,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+// nRF52840 内蔵ウォッチドッグ（ループブロック時の暴走防止）
+#define ENABLE_WDT 1
+#if ENABLE_WDT
+  // 32.768 kHz LFCLK 基準。WDT_TIMEOUT_S 秒で reset。
+  #define WDT_TIMEOUT_S 3
+#endif
 
 #define MEASURING_FREQ 50
 #define RADIO_SERIAL  Serial1
@@ -88,6 +96,15 @@ const float integralLimit = 200.0f;
 uint32_t srcSeq = 0;
 uint32_t prevUs = 0;
 bool telemetryOn = true;
+
+// ---- failsafe (uplink loss) ----
+//   アップリンク（地上側からのコマンド受信）が一定時間途絶えたら
+//   AUTO/PID を解除して MANUAL + 中立 trim に戻す。
+//   コマンドは [STATUS] や [PARAM] 等の応答受信時刻で判定するのではなく、
+//   実際にコマンド行が解釈された時刻（handleCommandLine 末尾）で更新する。
+uint32_t lastUplinkMs = 0;
+uint32_t failsafeTimeoutMs = 1500;  // 0 で無効化
+bool failsafeActive = false;
 
 // ---- command parser ----
 static char cmdBuf[120];
@@ -145,6 +162,27 @@ static float clipf(float v, float lo, float hi) {
 }
 
 // =============================================================
+//  watchdog (nRF52840 internal WDT)
+// =============================================================
+#if ENABLE_WDT
+static void wdtBegin() {
+  // すでに走っていれば何もしない（再起動後にライセンスはロックされる）
+  if (NRF_WDT->RUNSTATUS) return;
+  NRF_WDT->CONFIG = (WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos)
+                  | (WDT_CONFIG_SLEEP_Run  << WDT_CONFIG_SLEEP_Pos);
+  NRF_WDT->CRV  = (uint32_t)(32768UL * WDT_TIMEOUT_S - 1);
+  NRF_WDT->RREN = (WDT_RREN_RR0_Enabled << WDT_RREN_RR0_Pos);
+  NRF_WDT->TASKS_START = 1;
+}
+static inline void wdtKick() {
+  NRF_WDT->RR[0] = WDT_RR_RR_Reload;
+}
+#else
+static inline void wdtBegin() {}
+static inline void wdtKick() {}
+#endif
+
+// =============================================================
 //  status / help
 // =============================================================
 static void printStatus() {
@@ -159,6 +197,17 @@ static void printStatus() {
     "[STATUS] target=[%.2f,%.2f,%.2f] trim=[%.1f,%.1f,%.1f] mixL=%.2f mixR=%.2f tlm=%s",
     target[0], target[1], target[2], trimDeg[0], trimDeg[1], trimDeg[2],
     aileronMixL, aileronMixR, telemetryOn ? "on" : "off");
+  radioPrintln(buf);
+  snprintf(buf, sizeof(buf),
+    "[STATUS] failsafe=%lums active=%s wdt=%s",
+    (unsigned long)failsafeTimeoutMs,
+    failsafeActive ? "YES" : "no",
+#if ENABLE_WDT
+    "on"
+#else
+    "off"
+#endif
+  );
   radioPrintln(buf);
 }
 
@@ -179,6 +228,7 @@ static void printHelp() {
   radioPrintln("[INFO]   s2 <v>  (D2 elevator)");
   radioPrintln("[INFO] Other:");
   radioPrintln("[INFO]   status / help / tlm on / tlm off");
+  radioPrintln("[INFO]   failsafe <ms>   uplink-loss timeout (0 = disabled)");
 }
 
 // =============================================================
@@ -267,6 +317,21 @@ static void handleCommandLine(char* line) {
     return;
   }
 
+  // フェイルセーフ・タイムアウト設定
+  if (iequals(cmd, "failsafe")) {
+    char* arg = nextToken(p);
+    float v;
+    if (!arg || !parseFloat(arg, &v) || v < 0) {
+      radioPrintln("[INFO] usage: failsafe <ms>  (0 disables)");
+      return;
+    }
+    failsafeTimeoutMs = (uint32_t)v;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "[PARAM] failsafe=%lums", (unsigned long)failsafeTimeoutMs);
+    radioPrintln(buf);
+    return;
+  }
+
   radioPrintln("[INFO] unknown command (type 'help')");
 }
 
@@ -278,7 +343,15 @@ static void pollSerialCommands() {
     if (c == '\r') continue;
     if (c == '\n') {
       cmdBuf[cmdLen] = 0;
-      if (cmdLen > 0) handleCommandLine(cmdBuf);
+      if (cmdLen > 0) {
+        // どんな受信行でも「リンクは生きている」とみなす
+        lastUplinkMs = millis();
+        if (failsafeActive) {
+          failsafeActive = false;
+          radioPrintln("[FAILSAFE] cleared (uplink resumed)");
+        }
+        handleCommandLine(cmdBuf);
+      }
       cmdLen = 0;
       continue;
     }
@@ -301,6 +374,10 @@ void setup() {
   RADIO_SERIAL.begin(115200);
   DEBUG_SERIAL.begin(115200);
 
+  // WDT は IMU 初期化が長引いた場合に備えて先に起動・キックを差し挟む
+  wdtBegin();
+  wdtKick();
+
   servo[0].attach(SERVO_PIN_0);
   servo[1].attach(SERVO_PIN_1);
   servo[2].attach(SERVO_PIN_2);
@@ -310,7 +387,11 @@ void setup() {
 
   IMU.settings.gyroRange = 2000;
   IMU.settings.accelRange = 4;
-  while (IMU.begin() != 0) { delay(200); }
+  // IMU が応答しないままだと WDT で再起動する設計（無限待ちは入れない）
+  for (int tries = 0; tries < 10 && IMU.begin() != 0; ++tries) {
+    delay(200);
+    wdtKick();
+  }
   IMU.writeRegister(LSM6DS3_ACC_GYRO_CTRL2_G, 0x8C);
   IMU.writeRegister(LSM6DS3_ACC_GYRO_CTRL1_XL, 0x8A);
   IMU.writeRegister(LSM6DS3_ACC_GYRO_CTRL7_G, 0x00);
@@ -318,6 +399,8 @@ void setup() {
   filter.begin(MEASURING_FREQ);
 
   prevUs = micros();
+  // 起動直後は受信履歴ゼロ → 即フェイルセーフ発動を防ぐため初期化
+  lastUplinkMs = millis();
 
   radioPrintln("[READY] glider_nRF52840 booted (aileron mixing: D0=R / D1=L / D2=Elev)");
   printHelp();
@@ -325,7 +408,21 @@ void setup() {
 }
 
 void loop() {
+  wdtKick();
   pollSerialCommands();
+
+  // ---- フェイルセーフ判定 ----
+  if (failsafeTimeoutMs > 0
+      && (uint32_t)(millis() - lastUplinkMs) > failsafeTimeoutMs) {
+    if (!failsafeActive) {
+      failsafeActive = true;
+      baseMode = MODE_MANUAL;
+      // trim を中立に戻し、I 項もクリアして次の手動操作で滑らかに復帰
+      trimDeg[0] = trimDeg[1] = trimDeg[2] = 0.0f;
+      for (int i = 0; i < 3; i++) integralE[i] = 0.0f;
+      radioPrintln("[FAILSAFE] uplink lost -> MANUAL + trim=0");
+    }
+  }
 
   // dt
   uint32_t nowUs = micros();
@@ -399,9 +496,9 @@ void loop() {
   angle_E = clipf(angle_E, -90.0f, 90.0f);
 
   int servoAngle[3];
-  servoAngle[0] = (int)(angle_R + 90.0f);
-  servoAngle[1] = (int)(angle_L + 90.0f);
-  servoAngle[2] = (int)(angle_E + 90.0f);
+  servoAngle[0] = (int)lroundf(angle_R + 90.0f);
+  servoAngle[1] = (int)lroundf(angle_L + 90.0f);
+  servoAngle[2] = (int)lroundf(angle_E + 90.0f);
   for (int i = 0; i < 3; i++) {
     servoAngle[i] = (int)clipf((float)servoAngle[i], 0.0f, 180.0f);
     servo[i].write(servoAngle[i]);
