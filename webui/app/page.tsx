@@ -18,6 +18,7 @@ import { Glider3D } from "./components/Glider3D";
 import { RateMeter } from "./components/RateMeter";
 import { RecorderPanel } from "./components/RecorderPanel";
 import { QuickControl } from "./components/QuickControl";
+import { GainPanel } from "./components/GainPanel";
 import { SafetyPanel } from "./components/SafetyPanel";
 import type { TelemetryFrame } from "./hooks/useTelemetry";
 
@@ -26,7 +27,8 @@ const WS_TOKEN = process.env.NEXT_PUBLIC_WS_TOKEN ?? undefined;
 const SNAPSHOT_INTERVAL_MS = 200; // チャート再描画頻度（=5Hz）
 
 export default function Page() {
-  const [mode, setMode] = useState<SourceMode>("websocket");
+  // 既定は WebSerial (Python 不要、USB 直結。WebSocket に切替えたい場合はタブから)
+  const [mode, setMode] = useState<SourceMode>("webserial");
 
   const wsHook = useTelemetry(mode === "websocket" ? WS_URL : "", WS_TOKEN);
   const wsSerial = useWebSerial();
@@ -175,6 +177,9 @@ export default function Page() {
           onSend={sendCommand}
           enabled={status === "open"}
         />
+
+        {/* PID GAINS — per-axis Kp/Ki/Kd/target editor (Python 互換) */}
+        <GainPanel onSend={sendCommand} enabled={status === "open"} />
 
         {/* COMMAND */}
         <CommandPanel
