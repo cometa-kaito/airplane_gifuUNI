@@ -13,7 +13,7 @@
 
 | 優先度 | 項目 | 状態 | 該当コミット範囲 |
 |---|---|---|---|
-| 🔴 P0-1 | 射出検出 + フェーズマシン | ✅ 実装済 | Flight Phase Machine (DISARMED/PRELAUNCH/LAUNCH/GLIDE/LANDED) を `glider_nRF52840.ino` に追加 |
+| 🔴 P0-1 | 射出検出 + フェーズマシン | ✅ 実装済 | Flight Phase Machine (DISARMED/PRELAUNCH/LAUNCH/GLIDE/LANDED/WINDTUNNEL) を `glider_nRF52840.ino` に追加。LANDED は手動のみ（滑空中の誤発火回避） |
 | 🔴 P0-2 | PID 目標の動的化と feed-forward | ✅ 実装済 | `currentTargetPitch()` で phase 依存目標、`climb_ff` でエレベータ feed-forward |
 | 🔴 P0-3 | D 項にジャイロを直接使う | ✅ 実装済 | `d_source gyro` (既定) / `error` (互換) を `dSource` で切替 |
 | 🟠 P1-1 | 制御ループ周期を 100Hz に | ⏸ 保留 | dt 整合・テレメトリ帯域の検証が必要、競技後の課題に |

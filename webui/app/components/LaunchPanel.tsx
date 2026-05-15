@@ -20,16 +20,15 @@ import { PHASE_NAMES, type TelemetryFrame } from "../hooks/useTelemetry";
  * クライアント側の擬似遷移は廃止（旧版で実装していた overCountRef 廃止）。
  */
 
+// LANDED は手動のみ（`land` コマンド / 🛬 Land ボタン）。
+// 飛行中の安定滑空でも |a|≈1g + 一瞬の低 gyro で自動 LANDED が誤発火する
+// リスクを完全排除するため、auto-LANDED 系パラメータは UI から削除。
 type StoredParams = {
   launch_g: number;
   climb_ms: number;
   climb_pitch: number;
   climb_ff: number;
   glide_pitch: number;
-  landed_g: number;        // ||a|-1g| 許容偏差 (旧: |az|<th。意味が変わった点に注意)
-  landed_gyro: number;     // 角速度しきい値 [deg/s]
-  landed_ms: number;
-  glide_timeout: number;   // GLIDE 強制 LANDED タイムアウト [ms]、0 で無効
 };
 
 const DEFAULTS: StoredParams = {
@@ -38,10 +37,6 @@ const DEFAULTS: StoredParams = {
   climb_pitch: 15,
   climb_ff: 5,
   glide_pitch: 3,
-  landed_g: 0.15,           // 新セマンティクスでの既定（旧 0.3 を更新）
-  landed_gyro: 15,          // LSM6DS3 のバイアス+ノイズを呑み込める実用値 (旧 5 だと机置きで未発火)
-  landed_ms: 1000,
-  glide_timeout: 20000,
 };
 
 const STORAGE_KEY = "glider-webui:phase_params";
@@ -65,7 +60,7 @@ const PHASE_DESC: Record<number, string> = {
   0: "地上テスト中。failsafe 有効。Arm すると PRELAUNCH に遷移します。",
   1: "投擲待機中。|a| が launch_g を連続超過したら LAUNCH に自動遷移。",
   2: "上昇 (climb-out)。最初の数百 ms は PID ゼロホールド、その後 climb_pitch を目標に制御。",
-  3: "滑空中。glide_pitch を目標に PID 制御。静置検出で LANDED へ。",
+  3: "滑空中。glide_pitch を目標に PID 制御。手動で 🛬 Land を押すと LANDED へ。",
   4: "着地検出。サーボ中立、PID 停止。Disarm で DISARMED に戻せます。",
   5: "風洞試験中。PID 常時稼働 / target 手動 / tilt safeguard・failsafe・climb_ff すべて抑制。",
 };
@@ -135,11 +130,7 @@ export function LaunchPanel({
         await onSend(`climb_ms ${Math.round(applied.climb_ms)}`); await sleep(15);
         await onSend(`climb_pitch ${applied.climb_pitch.toFixed(1)}`); await sleep(15);
         await onSend(`climb_ff ${applied.climb_ff.toFixed(1)}`); await sleep(15);
-        await onSend(`glide_pitch ${applied.glide_pitch.toFixed(1)}`); await sleep(15);
-        await onSend(`landed_g ${applied.landed_g.toFixed(2)}`); await sleep(15);
-        await onSend(`landed_gyro ${applied.landed_gyro.toFixed(1)}`); await sleep(15);
-        await onSend(`landed_ms ${Math.round(applied.landed_ms)}`); await sleep(15);
-        await onSend(`glide_timeout ${Math.round(applied.glide_timeout)}`);
+        await onSend(`glide_pitch ${applied.glide_pitch.toFixed(1)}`);
       } catch {
         autoSyncedRef.current = false;
       }
@@ -517,14 +508,10 @@ export function LaunchPanel({
           {numInput("climb_pitch", "climb_pitch", "deg", "climb_pitch", -45, 60, 1, 1, "上昇目標角")}
           {numInput("climb_ff", "climb_ff", "deg", "climb_ff", -30, 30, 1, 1, "エレベータ FF")}
           {numInput("glide_pitch", "glide_pitch", "deg", "glide_pitch", -20, 30, 0.5, 1, "滑空目標角")}
-          {numInput("landed_g", "landed_g", "g", "landed_g", 0.05, 1.0, 0.05, 2, "||a|-1g| 偏差")}
-          {numInput("landed_gyro", "landed_gyro", "°/s", "landed_gyro", 0.5, 50, 0.5, 1, "停止判定 max|gyro|")}
-          {numInput("landed_ms", "landed_ms", "ms", "landed_ms", 100, 10000, 100, 0, "両条件 累積時間")}
-          {numInput("glide_timeout", "glide_timeout", "ms", "glide_timeout", 0, 120000, 1000, 0, "GLIDE 強制終了 (0=無効)")}
         </div>
         <div className="text-[10px] text-glider-textMute leading-snug pt-2">
-          ※ landed_g の意味は v17 以降「<code className="font-mono">||a|-1g| &lt; 値</code>」(地面に静置されている = 重力のみ作用) に変更。
-          旧版は <code className="font-mono">|az| &lt; 値</code> で自由落下しか想定していなかったため、机置きで発火しないバグでした。
+          ※ <strong>LANDED は手動のみ</strong>。GLIDE フェーズから抜けるには 🛬 Land ボタンか Disarm を押してください。
+          安定滑空中の |a|≈1g で誤発火するリスクを完全排除するため、auto-LANDED 検出は実装していません。
         </div>
       </details>
     </div>

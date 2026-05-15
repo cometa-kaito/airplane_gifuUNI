@@ -111,7 +111,7 @@ Step 5  Launch             Phase Machine を Arm → 機体を投げる
 ```
 DISARMED → (arm) → PRELAUNCH → (|a|>launch_g) → LAUNCH (climb-out)
                                               → (climb_ms 経過) → GLIDE
-                                              → (|az|<landed_g 持続) → LANDED → (disarm) → DISARMED
+                                              → (manual `land` or 🛬 Land ボタン) → LANDED → (disarm) → DISARMED
 ```
 
 | Phase | 制御 | 目標 pitch | サーボ |
@@ -125,9 +125,9 @@ DISARMED → (arm) → PRELAUNCH → (|a|>launch_g) → LAUNCH (climb-out)
 - **armed 中 (DISARMED 以外) は failsafe 抑制** — 地上局接続が落ちても飛行を継続できます。
 - **LAUNCH 直後の 500ms は PID 出力ゼロホールド** — Madgwick が投擲ショックから復帰する猶予。
 - **LAUNCH 中のエレベータ feed-forward** — `climb_ff` (既定 +5°) を加算し機首上げを補助。
-- **LANDED 自動検出** — `||a|-1g| < landed_g` (静置) かつ `max|gyro| < landed_gyro` (停止) が `landed_ms` 連続したらサーボ中立で停止。
-- **`glide_timeout` ハードタイムアウト** — GLIDE が 20 秒 (既定) を超えたら強制 LANDED。
-- **手動 `land` コマンド / WebUI の 🛬 Land ボタン** — 自動検出に頼らず即座に LANDED へ遷移。
+- **LANDED は手動のみ** — `land` コマンド / WebUI の 🛬 Land ボタン / PyQt の Land ボタンで遷移。
+  飛行中の安定滑空でも |a|≈1g + 一瞬の静止で誤発火するリスクがあるため、自動検出は**意図的に実装していない**。
+  GLIDE フェーズは時間制限なし。地上から回収するタイミングで人が判断して Land を押す運用。
 
 ### 風洞試験モード (Step 5b)
 
