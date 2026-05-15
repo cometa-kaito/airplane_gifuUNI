@@ -148,5 +148,18 @@ export function useTelemetry(url: string, token?: string) {
     ws.send(JSON.stringify({ cmd }));
   }, []);
 
-  return { status, latest, latestRef, rxCount, history: historyRef, sendCommand };
+  // WebSocket 経路では Python 側が CSV を JSON テレメトリのみ転送するため、
+  // [...] 系の info ログは（現状の Python ground_station では）届かない。
+  // 互換性のため空の ref と tick を返す。
+  const infoLogStub = useRef<{ ts: number; line: string }[]>([]);
+  return {
+    status,
+    latest,
+    latestRef,
+    rxCount,
+    history: historyRef,
+    infoLog: infoLogStub,
+    infoLogTick: 0,
+    sendCommand,
+  };
 }

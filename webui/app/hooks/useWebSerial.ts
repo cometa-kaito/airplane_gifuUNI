@@ -36,6 +36,11 @@ export function useWebSerial() {
   // 受信ループ完了を await できるようにする（disconnect で待ち合わせ用）
   const readLoopDoneRef = useRef<Promise<void> | null>(null);
 
+  // 情報ログ ([STATUS], [PHASE], [PARAM] など [...] で始まる応答ライン)。
+  // テレメトリ CSV パースで捨てられるので、ここに溜めて UI に見せる。
+  const infoLogRef = useRef<{ ts: number; line: string }[]>([]);
+  const [infoLogTick, setInfoLogTick] = useState(0);  // 再描画トリガ用
+
   // SSR 対応: 初期は false、マウント後に navigator.serial の有無を判定
   const [supported, setSupported] = useState(false);
   useEffect(() => {
@@ -49,7 +54,18 @@ export function useWebSerial() {
   //   欠損列はそれぞれ 0 / 計算値で埋める。
   const parseLine = useCallback((line: string) => {
     if (!line) return;
-    if (line.startsWith("[") || line.startsWith("#")) return;
+    if (line.startsWith("[") || line.startsWith("#")) {
+      // 情報ログとして保持し、UI 側で参照させる（最大 200 行、古いものを捨てる）
+      const buf = infoLogRef.current;
+      buf.push({ ts: Date.now(), line });
+      if (buf.length > 200) buf.splice(0, buf.length - 200);
+      // 100ms スロットルで UI 通知（毎行 setState すると重い）
+      const now = performance.now();
+      if (now - lastSetLatest.current > 100) {
+        setInfoLogTick((n) => n + 1);
+      }
+      return;
+    }
     const parts = line.split(",");
     if (parts.length < 15) return;
     const n = parts.map((p) => Number(p));
@@ -205,6 +221,8 @@ export function useWebSerial() {
     latestRef,
     rxCount,
     history: historyRef,
+    infoLog: infoLogRef,
+    infoLogTick,
     supported,
     connect,
     disconnect,

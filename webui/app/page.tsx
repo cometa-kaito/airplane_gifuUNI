@@ -22,6 +22,7 @@ import { GainPanel } from "./components/GainPanel";
 import { SafetyPanel } from "./components/SafetyPanel";
 import { CalibrationPanel } from "./components/CalibrationPanel";
 import { LaunchPanel } from "./components/LaunchPanel";
+import { InfoLogPanel } from "./components/InfoLogPanel";
 import type { TelemetryFrame } from "./hooks/useTelemetry";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8765";
@@ -77,6 +78,8 @@ export default function Page() {
 
   const active = mode === "websocket" ? wsHook : wsSerial;
   const { status, latestRef, rxCount, history } = active;
+  const infoLog = active.infoLog;
+  const infoLogTick = active.infoLogTick;
 
   const [snap, setSnap] = useState<TelemetryFrame[]>([]);
   useEffect(() => {
@@ -314,13 +317,13 @@ export default function Page() {
         </div>
 
         {/* ============================================================ */}
-        {/* ADVANCED · 生コマンド (フォールバック)                        */}
+        {/* ADVANCED · 生コマンド + デバイスログ (Test/デバッグ用)         */}
         {/* ============================================================ */}
-        <details className="rounded-lg border border-glider-border/60 bg-glider-bg/40">
+        <details className="rounded-lg border border-glider-border/60 bg-glider-bg/40" open>
           <summary className="px-4 py-3 cursor-pointer select-none text-[12px] uppercase tracking-[0.18em] font-bold text-glider-textDim hover:text-glider-text">
-            ▸ Advanced · 生コマンド入力（通常は不要）
+            ▸ Advanced · 生コマンド + デバイスログ
           </summary>
-          <div className="p-4 pt-0">
+          <div className="p-4 pt-0 space-y-4">
             <CommandPanel
               onSend={sendCommand}
               enabled={status === "open"}
@@ -330,6 +333,7 @@ export default function Page() {
                   : "WebSerial: USB 直結。Python 不要"
               }
             />
+            <InfoLogPanel logRef={infoLog} tick={infoLogTick} />
           </div>
         </details>
 
