@@ -18,6 +18,12 @@
 //         左エルロン (D1)  = trim[1] - u_roll   (左右逆位相)
 //         エレベータ (D2)  = trim[2] + u_pitch
 //
+//  自律飛行 (Launch detection):
+//    `arm` コマンドで投擲検知を有効化。
+//    投擲時 |a|>2.5g を一定時間連続検出すると AUTO/PID へ自動遷移し、
+//    その後 500ms の grace 期間は PID 出力をゼロホールド（Madgwick が
+//    投擲ショックから復帰する猶予）。その後 PID 制御開始。
+//
 //  CSV テレメトリ (15 列):
 //    seq, t_ms, dt_ms, ax, ay, az, gx, gy, gz,
 //    roll, pitch, yaw, s0(右エルロン), s1(左エルロン), s2(エレベータ)
@@ -33,6 +39,8 @@
 //    s0 <deg> / s1 <deg> / s2 <deg>   (各サーボの trim、-90..+90)
 //    status / help / tlm on / tlm off
 //    failsafe <ms>      アップリンク途絶でフェイルセーフ発動するまでの ms (0 で無効)
+//    arm / disarm       投擲検知の有効化 / 解除（自律滑空モード）
+//    launch_g <g>       投擲検知しきい値 (既定 2.5g)
 // =============================================================
 
 #include <LSM6DS3.h>
@@ -43,6 +51,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>     // sqrtf, fabsf (launch detection / tilt safeguard)
 
 // nRF52840 内蔵ウォッチドッグ（ループブロック時の暴走防止）
 #define ENABLE_WDT 1
@@ -139,6 +148,26 @@ bool failsafeActive = false;
 //   再武装は `a`/`auto`/`1`/`2`/`3` コマンドで AUTO に戻ったタイミング。
 float tiltSafeguardDeg = 60.0f;     // 既定 60°
 bool  tiltSafeguardTriggered = false;
+
+// ---- 投擲検知 (launch detection / auto-arm) ----
+//   `arm` で armed=true / MANUAL ホールドへ。
+//   |a| が launchAccelG を LAUNCH_TRIGGER_FRAMES 連続で超えたら launched=true、
+//   AUTO/PID へ自動遷移。投擲後 LAUNCH_GRACE_MS 間は PID 出力をゼロホールド
+//   (Madgwick が投擲時の高G ショックから収束する間、サーボを暴れさせない)。
+//   armed 中は failsafe を抑制（地上局接続が無くても飛行可能）。
+bool  armedForLaunch = false;
+bool  launched = false;
+uint32_t launchTimeMs = 0;
+float launchAccelG = 2.5f;                // 投擲判定しきい値 [g]
+const uint32_t LAUNCH_GRACE_MS = 500;     // 投擲後の PID ゼロホールド期間 [ms]
+const uint8_t  LAUNCH_TRIGGER_FRAMES = 2; // 連続超過フレーム数 (~62ms @30Hz)
+uint8_t launchHighGCount = 0;
+
+// PID 出力の物理飽和しきい値 (back-calc anti-windup 用)
+//   ミキシング後の servo angle は ±90° にクリップされるが、I 項の暴走を防ぐため
+//   PID 段階でも u を ±OUTPUT_SAT に近づける。
+//   ※ サーボ機械限界より少し小さくすることで「リザーブ」を確保。
+const float OUTPUT_SAT = 90.0f;
 
 // ---- command parser ----
 static char cmdBuf[120];
@@ -252,6 +281,13 @@ static void printStatus() {
     attitudeOffsetActive ? "ACTIVE" : "off",
     attitudeOffset[0], attitudeOffset[1], attitudeOffset[2]);
   radioPrintln(buf);
+  snprintf(buf, sizeof(buf),
+    "[STATUS] arm=%s launched=%s launch_g=%.2f grace_ms=%lu",
+    armedForLaunch ? "ARMED" : "off",
+    launched ? "YES" : "no",
+    launchAccelG,
+    (unsigned long)LAUNCH_GRACE_MS);
+  radioPrintln(buf);
 }
 
 static void printHelp() {
@@ -277,6 +313,10 @@ static void printHelp() {
   radioPrintln("[INFO]   dfilter <alpha>    D-term LPF coefficient 0..0.99 (0 = raw, 0.85 default)");
   radioPrintln("[INFO]   zero               capture current attitude as 0deg reference");
   radioPrintln("[INFO]   unzero             clear zero offset (use raw IMU)");
+  radioPrintln("[INFO] Launch detection (autonomous glide):");
+  radioPrintln("[INFO]   arm                arm launch detector (stay MANUAL until thrown)");
+  radioPrintln("[INFO]   disarm             clear armed state");
+  radioPrintln("[INFO]   launch_g <g>       throw-detection accel threshold (default 2.5)");
 }
 
 // =============================================================
@@ -440,6 +480,46 @@ static void handleCommandLine(char* line) {
     return;
   }
 
+  // ---- 投擲検知 (autonomous launch) ----
+  if (iequals(cmd, "arm")) {
+    armedForLaunch = true;
+    launched = false;
+    launchHighGCount = 0;
+    baseMode = MODE_MANUAL;
+    // PID 状態をクリア（launched=true 移行時にクリーンに開始するため）
+    for (int i = 0; i < 3; i++) {
+      integralE[i] = 0.0f;
+      dFilt[i] = 0.0f;
+      prevE[i] = 0.0f;
+    }
+    char buf[80];
+    snprintf(buf, sizeof(buf),
+      "[ARM] ARMED (waiting throw >%.2fg). Failsafe suppressed while armed.",
+      launchAccelG);
+    radioPrintln(buf);
+    return;
+  }
+  if (iequals(cmd, "disarm")) {
+    armedForLaunch = false;
+    launched = false;
+    launchHighGCount = 0;
+    radioPrintln("[ARM] disarmed");
+    return;
+  }
+  if (iequals(cmd, "launch_g")) {
+    char* arg = nextToken(p);
+    float v;
+    if (!arg || !parseFloat(arg, &v) || v < 1.0f || v > 8.0f) {
+      radioPrintln("[INFO] usage: launch_g <g 1.0..8.0>  (default 2.5)");
+      return;
+    }
+    launchAccelG = v;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "[PARAM] launch_g=%.2fg", launchAccelG);
+    radioPrintln(buf);
+    return;
+  }
+
   // 姿勢角しきい値安全装置の設定（`tilt_limit` も別名で受ける）
   if (iequals(cmd, "safe_angle") || iequals(cmd, "tilt_limit")) {
     char* arg = nextToken(p);
@@ -541,7 +621,10 @@ void loop() {
   pollSerialCommands();
 
   // ---- フェイルセーフ判定 ----
-  if (failsafeTimeoutMs > 0
+  //   armedForLaunch 中（=自律飛行待機 / 投擲後）は地上局との通信が
+  //   無くても飛行を継続させたいので failsafe をスキップする。
+  //   解除するには `disarm` で armed を解いてから操作。
+  if (!armedForLaunch && failsafeTimeoutMs > 0
       && (uint32_t)(millis() - lastUplinkMs) > failsafeTimeoutMs) {
     if (!failsafeActive) {
       failsafeActive = true;
@@ -573,6 +656,35 @@ void loop() {
   Q[0] = filter.getRoll();
   Q[1] = filter.getPitch();
   Q[2] = filter.getYaw();
+
+  // ---- 投擲検知 (launch detection) ----
+  //   armed 中に |a| が連続でしきい値を超えたら launched=true、AUTO/PID へ自動遷移。
+  //   1フレームのノイズで誤発火しないよう LAUNCH_TRIGGER_FRAMES 連続検出が条件。
+  if (armedForLaunch && !launched) {
+    float aMag = sqrtf(ax*ax + ay*ay + az*az);
+    if (aMag > launchAccelG) {
+      if (++launchHighGCount >= LAUNCH_TRIGGER_FRAMES) {
+        launched = true;
+        launchTimeMs = millis();
+        baseMode = MODE_AUTO;
+        autoSub  = SUB_PID;
+        tiltSafeguardTriggered = false;
+        // I/D 状態をクリア（launched 開始時に綺麗な状態で）
+        for (int i = 0; i < 3; i++) {
+          integralE[i] = 0.0f;
+          dFilt[i] = 0.0f;
+          prevE[i] = target[i] - Q[i];
+        }
+        char buf[96];
+        snprintf(buf, sizeof(buf),
+          "[LAUNCH] detected |a|=%.2fg -> AUTO/PID (grace %lums)",
+          aMag, (unsigned long)LAUNCH_GRACE_MS);
+        radioPrintln(buf);
+      }
+    } else {
+      launchHighGCount = 0;
+    }
+  }
 
   // ---- attitude zero offset 補正 ----
   //   `zero` コマンドで保存した取付角オフセットを差し引く。
@@ -631,7 +743,16 @@ void loop() {
     prevSub  = autoSub;
   }
 
+  // ---- 投擲後 grace 期間判定 ----
+  //   launched 直後の LAUNCH_GRACE_MS は PID 出力をゼロホールド (= MANUAL 相当)。
+  //   投擲時の高G/高レート転位で Madgwick が一時的にズレるため、姿勢推定が
+  //   安定するまで舵を打たない方が安全。grace 経過後に PID 制御を開始。
+  bool inLaunchGrace = launched
+      && (uint32_t)(millis() - launchTimeMs) < LAUNCH_GRACE_MS;
+
   // 3軸 PID 計算（roll=0, pitch=1, yaw=2）。yaw は K=0 既定で実質ゼロ。
+  // back-calculation anti-windup: u を OUTPUT_SAT で飽和させ、飽和分だけ
+  // I 項を巻き戻して暴走を防ぐ。Ki=0 のときは無効化。
   float u[3] = {0.0f, 0.0f, 0.0f};
   for (int i = 0; i < 3; i++) {
     float e = target[i] - Q[i];
@@ -653,11 +774,23 @@ void loop() {
     }
     prevE[i] = e;
 
-    if (baseMode == MODE_AUTO) {
-      if (autoSub == SUB_P)        u[i] = Kp[i] * e;
-      else if (autoSub == SUB_PD)  u[i] = Kp[i] * e + Kd[i] * de;
-      else                          u[i] = Kp[i] * e + Ki[i] * integralE[i] + Kd[i] * de;
+    if (baseMode == MODE_AUTO && !inLaunchGrace) {
+      float u_raw;
+      if (autoSub == SUB_P)        u_raw = Kp[i] * e;
+      else if (autoSub == SUB_PD)  u_raw = Kp[i] * e + Kd[i] * de;
+      else                          u_raw = Kp[i] * e + Ki[i] * integralE[i] + Kd[i] * de;
+
+      // back-calculation anti-windup: u が OUTPUT_SAT に張り付いている間、
+      // I 項が更にそちらへ伸びるのを抑える。Ki>0 のときだけ意味がある。
+      float u_clip = clipf(u_raw, -OUTPUT_SAT, OUTPUT_SAT);
+      if (autoSub == SUB_PID && Ki[i] > 1e-6f && u_raw != u_clip) {
+        // 飽和差分だけ integralE を巻き戻す
+        integralE[i] -= (u_raw - u_clip) / Ki[i];
+        integralE[i] = clipf(integralE[i], -integralLimit, integralLimit);
+      }
+      u[i] = u_clip;
     }
+    // (inLaunchGrace 中は u[i] = 0 のまま、サーボはトリム位置を保持)
   }
 
   // ---- サーボミキシング ----

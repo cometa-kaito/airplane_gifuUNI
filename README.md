@@ -91,6 +91,23 @@ WebSocket モードでコマンド操作したい場合は ground_station 側で
 | `docs/COMMANDS.md` | 無線で送れるコマンド一覧 |
 | `docs/SETUP.md` | Arduino IDE / Python 環境構築手順 |
 
+## 飛行までの操作フロー（Pre-flight Workflow）
+
+WebUI / Python 地上局のいずれも、**上から順に触る** ように UI が並んでいます:
+
+```
+Step 0  Connect            USB or WebSocket でデバイス接続
+Step 1  Calibration        機体を水平に置いて Zero Now
+Step 2  Safety             姿勢角しきい値 + Failsafe を設定
+Step 3  Trim & Mode        D-Pad / 矢印キーで MANUAL トリム調整
+Step 4  PID Gains          Soft / Default / Responsive プリセット or 個別調整
+Step 5  Launch             投擲検知を Arm → 機体を投げる
+```
+
+Step 5 で `arm` を送ると、機体は **MANUAL ホールドのまま投擲を待ち、|a|>launch_g を連続検出した時点で AUTO/PID へ自動遷移** します。投擲後 500ms は PID 出力をゼロホールド（Madgwick が高G ショックから復帰する猶予）し、その後 PID 制御を開始します。
+
+**armed 中は failsafe を抑制**するため、地上局との接続が落ちても飛行を継続できます（自律滑空中に地上局と離れる前提）。tilt safeguard と WDT は引き続き有効。
+
 ## 開発履歴サマリ
 
 - **Lesson01〜04**：LED・Serial 基礎
@@ -99,3 +116,4 @@ WebSocket モードでコマンド操作したい場合は ground_station 側で
 - **Lesson12〜14**：ESP-NOW 無線通信構築（MAC 確認・1行通信・サーボ遠隔操作）
 - **Exercise05+**：3軸独立 PID + 拡張テレメトリ + 個別サーボ操作（本リポジトリ収録版）
 - **Python ビューア**：2D/3D 両方、機体テンプレート切替対応
+- **自律飛行モード**: 投擲検知 (`arm`/`launch_g`) + PID anti-windup + Pre-flight Workflow UI

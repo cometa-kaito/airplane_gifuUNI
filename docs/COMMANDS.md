@@ -71,6 +71,9 @@
 | `dfilter <alpha>` | D 項に掛ける 1次 IIR LPF 係数 (0..0.99)。**既定 0.85** (30Hz サンプリングで cutoff ~0.84Hz)。**0 で生 D**、大きいほど滑らかになる代わりに応答が遅延。サーボの「ぴくぴく」抑制に使用 |
 | `zero` | **取付角キャリブレーション**: 今の Madgwick 出力 (roll/pitch/yaw) を「0°」基準として記録。以降の PID / safeguard / テレメトリ はこの基準からの相対角になる。RAM 保持 (再起動でクリア)。フライト前に機体を水平に置いて実行 |
 | `unzero` | `zero` で設定したオフセットを解除して生 IMU 出力に戻す |
+| `arm` | **投擲検知の有効化** (自律滑空モード)。MANUAL ホールドのまま `|a|>launch_g` の連続検出を待ち、検知すると AUTO/PID へ自動遷移。Arm 中は failsafe が抑制される |
+| `disarm` | armed 状態を解除（地上テスト用） |
+| `launch_g <g>` | 投擲判定の加速度しきい値 [g]。既定 2.5、範囲 1.0..8.0 |
 
 ### 取付角キャリブレーション (`zero`)
 
@@ -187,3 +190,46 @@ kp p 1.5     ← pitch P ゲイン
 kd p 0.05    ← pitch D ゲイン
 target p 0   ← 水平を維持
 ```
+
+## 投擲検知（自律滑空フロー）
+
+地上局から逐一 AUTO 操作する必要を無くす自律飛行モード。
+WebUI の Step 1〜4 で事前準備を済ませた後、最後に `arm` を送って投擲する。
+
+```
+# 1. キャリブレーション (機体を水平面に置いた状態で)
+zero
+
+# 2. 安全装置を設定
+safe_angle 60       ← 姿勢角しきい値 60°
+failsafe 1500       ← uplink 失効 1.5s で復帰 (Arm 中は抑制)
+
+# 3. 必要に応じてトリム調整 (手動)
+m
+s0 0
+s1 0
+s2 0
+
+# 4. PID ゲインを設定
+kp r 1.0
+kp p 1.0
+kd r 0.02
+kd p 0.02
+
+# 5. 投擲検知を有効化、しきい値設定
+launch_g 2.5
+arm                 ← MANUAL ホールドで待機
+                    # → [ARM] ARMED (waiting throw >2.5g). Failsafe suppressed while armed.
+
+# 6. 機体を投擲する
+                    # → [LAUNCH] detected |a|=3.20g -> AUTO/PID (grace 500ms)
+                    # 500ms grace → PID 制御開始 → 自律滑空
+
+# 7. 回収後
+disarm              ← 武装解除
+```
+
+**重要な振る舞い**:
+- Arm 中は地上局接続が無くても飛行を継続できる（failsafe 抑制）。
+- launched 直後の 500ms は PID 出力をゼロホールド（Madgwick が投擲ショックから復帰する猶予）。
+- tilt safeguard (`safe_angle`) は引き続き有効。極端な姿勢で MANUAL+trim=0 に強制復帰する（落下防止）。

@@ -778,6 +778,37 @@ class MainWindow(QtWidgets.QMainWindow):
             btn.clicked.connect(lambda _, c=cmd: self.serial_io.send_command(c))
             ctl_layout.addWidget(btn, row, col + 1)
 
+        # ---- 投擲検知 (Launch / autonomous glide) ----
+        #   Arm: MANUAL ホールド + 投擲待機。|a|>launch_g 連続検出 → AUTO/PID 自動遷移。
+        #   armed 中は failsafe 抑制（地上局接続不要で飛行可能）。
+        row += 1
+        ctl_layout.addWidget(QtWidgets.QLabel("Launch:"), row, 0)
+        btn_arm = QtWidgets.QPushButton("🚀 Arm")
+        btn_arm.setMinimumWidth(60)
+        btn_arm.setToolTip("投擲待機モード開始（機体は MANUAL のまま待機）")
+        btn_arm.clicked.connect(lambda: self.serial_io.send_command("arm"))
+        ctl_layout.addWidget(btn_arm, row, 1)
+
+        btn_disarm = QtWidgets.QPushButton("Disarm")
+        btn_disarm.setMinimumWidth(60)
+        btn_disarm.setToolTip("武装解除（地上テスト用）")
+        btn_disarm.clicked.connect(lambda: self.serial_io.send_command("disarm"))
+        ctl_layout.addWidget(btn_disarm, row, 2)
+
+        ctl_layout.addWidget(QtWidgets.QLabel("launch_g:"), row, 3)
+        self.spin_launch_g = QtWidgets.QDoubleSpinBox()
+        self.spin_launch_g.setRange(1.0, 8.0)
+        self.spin_launch_g.setSingleStep(0.1)
+        self.spin_launch_g.setDecimals(1)
+        self.spin_launch_g.setValue(2.5)
+        self.spin_launch_g.setSuffix(" g")
+        self.spin_launch_g.setMinimumWidth(70)
+        self.spin_launch_g.setToolTip("投擲判定の加速度しきい値 (既定 2.5g)")
+        self.spin_launch_g.editingFinished.connect(
+            lambda: self.serial_io.send_command(f"launch_g {self.spin_launch_g.value():.2f}")
+        )
+        ctl_layout.addWidget(self.spin_launch_g, row, 4)
+
         # ---- PID ゲイン ヘッダー ----
         row += 1
         ctl_layout.addWidget(QtWidgets.QLabel("PID gains:"), row, 0)
