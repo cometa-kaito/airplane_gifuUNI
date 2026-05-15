@@ -42,6 +42,47 @@ const PARAMS: ParamSpec[] = [
   { key: "target", label: "Target", min: -90,  max: 90, step: 1,    decimals: 1, defaults: [0.0, 0.0, 0.0] },
 ];
 
+/**
+ * PID プリセット（紙飛行機向けの代表値）
+ *
+ * 順序の決め方:
+ *   - "soft":   初回投擲・低速の紙飛行機向け。動きを控えめに、振動少なめ。
+ *   - "default": ファーム既定値。バランス重視。
+ *   - "responsive": ある程度速度が出る場合・大きめ機体向け。応答優先。
+ *
+ * yaw 軸 (y) は K=0 のまま：機体にラダー無し、yaw 制御は行わない。
+ *
+ * 各値は [Kp_r, Kp_p, Ki_r, Ki_p, Kd_r, Kd_p] のように2軸ぶん指定。
+ * yaw は常に 0 のため省略。
+ */
+type Preset = {
+  key: string;
+  label: string;
+  hint: string;
+  values: { kp: [number, number]; ki: [number, number]; kd: [number, number] };
+};
+
+const PRESETS: Preset[] = [
+  {
+    key: "soft",
+    label: "Soft (paper)",
+    hint: "紙飛行機・初回投擲向け。穏やかな応答・振動抑制重視。",
+    values: { kp: [0.6, 0.6], ki: [0.0, 0.0], kd: [0.03, 0.03] },
+  },
+  {
+    key: "default",
+    label: "Default",
+    hint: "ファーム既定値。バランス型 (Kp=1.0 / Ki=0.2 / Kd=0.02)。",
+    values: { kp: [1.0, 1.0], ki: [0.2, 0.2], kd: [0.02, 0.02] },
+  },
+  {
+    key: "responsive",
+    label: "Responsive",
+    hint: "大きめ機体・速度高め向け。応答優先 (Kp 大、Kd 大)。",
+    values: { kp: [1.8, 1.6], ki: [0.1, 0.1], kd: [0.06, 0.05] },
+  },
+];
+
 const AXES: { letter: Axis; label: string; color: string }[] = [
   { letter: "r", label: "roll",  color: "#ff5d6c" },
   { letter: "p", label: "pitch", color: "#3ddc97" },
@@ -221,6 +262,50 @@ export function GainPanel({
     setValues(d);
   }, []);
 
+  /**
+   * プリセット適用: roll/pitch の Kp/Ki/Kd だけまとめて設定し、即時送信。
+   * yaw は触らない (機体にラダー無し、target 値も触らない)。
+   */
+  const applyPreset = useCallback(
+    async (preset: Preset) => {
+      const updates: { param: Param; axis: Axis; value: number }[] = [];
+      const ax: Axis[] = ["r", "p"];
+      ax.forEach((a, idx) => {
+        updates.push({ param: "kp", axis: a, value: preset.values.kp[idx] });
+        updates.push({ param: "ki", axis: a, value: preset.values.ki[idx] });
+        updates.push({ param: "kd", axis: a, value: preset.values.kd[idx] });
+      });
+      // 入力欄の表示を即時反映
+      setValues((prev) => {
+        const next = { ...prev };
+        for (const u of updates) next[key(u.param, u.axis)] = u.value;
+        return next;
+      });
+      if (!enabled) return;
+      // 機体へ逐次送信 (連続送信での文字溢れ防止に小さく間隔)
+      for (const u of updates) {
+        await sendOne(u.param, u.axis, u.value);
+        await new Promise((r) => setTimeout(r, 15));
+      }
+    },
+    [enabled, sendOne],
+  );
+
+  // 現在の applied 値がどのプリセットと一致するかを判定（UI ハイライト用）
+  const matchingPreset = (() => {
+    for (const p of PRESETS) {
+      const ax: Axis[] = ["r", "p"];
+      let match = true;
+      for (let i = 0; i < ax.length; i++) {
+        if (Math.abs(applied[`kp_${ax[i]}`] - p.values.kp[i]) > 1e-3) match = false;
+        if (Math.abs(applied[`ki_${ax[i]}`] - p.values.ki[i]) > 1e-3) match = false;
+        if (Math.abs(applied[`kd_${ax[i]}`] - p.values.kd[i]) > 1e-3) match = false;
+      }
+      if (match) return p.key;
+    }
+    return null;
+  })();
+
   const applyDfilter = useCallback(
     async (value?: number) => {
       const v = Math.max(0, Math.min(0.99, value ?? dfilter));
@@ -288,6 +373,31 @@ export function GainPanel({
             Apply All
           </button>
         </div>
+      </div>
+
+      {/* プリセット (roll/pitch の Kp/Ki/Kd を一括設定) */}
+      <div className="flex items-center gap-2 flex-wrap py-1">
+        <span className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
+          Presets (roll/pitch)
+        </span>
+        {PRESETS.map((p) => (
+          <button
+            key={p.key}
+            onClick={() => applyPreset(p)}
+            disabled={!enabled}
+            title={p.hint}
+            className={`px-3 py-1 text-xs font-bold rounded-md border transition ${
+              matchingPreset === p.key
+                ? "bg-glider-accent/20 border-glider-accent text-glider-accent"
+                : "bg-glider-surface border-glider-border text-glider-textDim hover:border-glider-borderHi"
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+        <span className="text-[10px] text-glider-textMute italic ml-1">
+          yaw は触りません (ラダー無し)
+        </span>
       </div>
 
       <div className="overflow-x-auto">
