@@ -563,9 +563,20 @@ void loop() {
   servoAngle[0] = (int)lroundf(angle_R + 90.0f);
   servoAngle[1] = (int)lroundf(angle_L + 90.0f);
   servoAngle[2] = (int)lroundf(angle_E + 90.0f);
+
+  // 値に変化がある時だけ servo.write() を呼ぶ。
+  // 理由: mbed-enabled nRF52840 の Servo ライブラリは内部で PwmOut::pulsewidth_us
+  // を呼ぶが、毎回タイマー値を更新する実装になっており、同じ値の write でも
+  // PWM パルス幅に µs オーダの微小ジッタが乗る。これがサーボ「ぴくぴく」の主因。
+  // MANUAL モードで trim 一定なら servoAngle は決定的なので 1度書けば十分。
+  // PWM ハードウェアは値を保持し続けるため、書かなくても出力は維持される。
+  static int lastServoAngle[3] = {-1, -1, -1};  // 初回必ず書くため -1
   for (int i = 0; i < 3; i++) {
     servoAngle[i] = (int)clipf((float)servoAngle[i], 0.0f, 180.0f);
-    servo[i].write(servoAngle[i]);
+    if (servoAngle[i] != lastServoAngle[i]) {
+      servo[i].write(servoAngle[i]);
+      lastServoAngle[i] = servoAngle[i];
+    }
   }
 
   // telemetry (15-field CSV, viewer compatible)
