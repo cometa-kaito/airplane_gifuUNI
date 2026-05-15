@@ -111,7 +111,8 @@ Step 5  Launch             Phase Machine を Arm → 機体を投げる
 ```
 DISARMED → (arm) → PRELAUNCH → (|a|>launch_g) → LAUNCH (climb-out)
                                               → (climb_ms 経過) → GLIDE
-                                              → (manual `land` or 🛬 Land ボタン) → LANDED → (disarm) → DISARMED
+                                              → (`land` / 🛬 Land ボタン) → DISARMED (trim=0)
+                                              → (`disarm`)                → DISARMED (trim 維持)
 ```
 
 | Phase | 制御 | 目標 pitch | サーボ |
@@ -120,14 +121,16 @@ DISARMED → (arm) → PRELAUNCH → (|a|>launch_g) → LAUNCH (climb-out)
 | LAUNCH (初頭 500ms) | PID ゼロホールド | - | trim + climb_ff |
 | LAUNCH (残り) | AUTO/PID | climb_pitch (+15°) | PID 出力 + climb_ff |
 | GLIDE | AUTO/PID | glide_pitch (+3°) | PID 出力 |
-| LANDED | MANUAL + trim=0 | - | 中立 |
+
+旧 `PHASE_LANDED` (フェーズ 4) は DISARMED と機能的に同じため統合済 (`land` コマンドが trim=0 リセット付きで DISARMED に戻す形に変更)。`disarm` は trim を維持して DISARMED へ。
 
 - **armed 中 (DISARMED 以外) は failsafe 抑制** — 地上局接続が落ちても飛行を継続できます。
 - **LAUNCH 直後の 500ms は PID 出力ゼロホールド** — Madgwick が投擲ショックから復帰する猶予。
 - **LAUNCH 中のエレベータ feed-forward** — `climb_ff` (既定 +5°) を加算し機首上げを補助。
-- **LANDED は手動のみ** — `land` コマンド / WebUI の 🛬 Land ボタン / PyQt の Land ボタンで遷移。
-  飛行中の安定滑空でも |a|≈1g + 一瞬の静止で誤発火するリスクがあるため、自動検出は**意図的に実装していない**。
-  GLIDE フェーズは時間制限なし。地上から回収するタイミングで人が判断して Land を押す運用。
+- **飛行終了は手動のみ** — `land` (trim リセット付き) / `disarm` (trim 維持) を手動で押す。
+  飛行中の安定滑空でも |a|≈1g + 一瞬の静止で誤発火するリスクがあるため、自動着地検出は**意図的に実装していない**。
+  GLIDE フェーズは時間制限なし。地上から回収するタイミングで人が判断して Land or Disarm を押す運用。
+- **`land` と `disarm` の違い** — 機能的には同じ DISARMED フェーズに戻るが、`land` は trim を 0 にリセット (飛行終了の意味)、`disarm` は trim を維持 (PRELAUNCH キャンセル時にユーザ設定値を守る)。
 
 ### 風洞試験モード (Step 5b)
 

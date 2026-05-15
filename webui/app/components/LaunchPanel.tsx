@@ -57,11 +57,11 @@ const PHASE_COLORS: Record<number, string> = {
 };
 
 const PHASE_DESC: Record<number, string> = {
-  0: "地上テスト中。failsafe 有効。Arm すると PRELAUNCH に遷移します。",
+  0: "待機中 (地上テスト or 飛行終了後)。failsafe 有効。Arm で PRELAUNCH に遷移、Wind Tunnel で WT へ。",
   1: "投擲待機中。|a| が launch_g を連続超過したら LAUNCH に自動遷移。",
   2: "上昇 (climb-out)。最初の数百 ms は PID ゼロホールド、その後 climb_pitch を目標に制御。",
-  3: "滑空中。glide_pitch を目標に PID 制御。手動で 🛬 Land を押すと LANDED へ。",
-  4: "着地検出。サーボ中立、PID 停止。Disarm で DISARMED に戻せます。",
+  3: "滑空中。glide_pitch を目標に PID 制御。手動で 🛬 Land を押すと飛行終了。",
+  4: "(旧フェーズ。新 firmware では DISARMED に統合)",
   5: "風洞試験中。PID 常時稼働 / target 手動 / tilt safeguard・failsafe・climb_ff すべて抑制。",
 };
 
@@ -243,10 +243,11 @@ export function LaunchPanel({
           } else if (phase === 3) {
             msg = "✓ GLIDE 中 (滑空 PID 制御)";
             color = "#22c55e";
-          } else if (phase === 4) {
-            msg = "■ LANDED — Disarm で復帰";
-            color = "#3b82f6";
+          } else if (phase === 5) {
+            msg = "🌬 WINDTUNNEL 中 (target スイープ可)";
+            color = "#7c3aed";
           }
+          // phase === 4 (旧 LANDED) は DISARMED に統合済のため到達しない
           aMsgRef.current.textContent = msg;
           aMsgRef.current.style.color = color;
         }
@@ -413,11 +414,12 @@ export function LaunchPanel({
 
       {/* Arm / Land / Disarm — フェーズ依存で disable して誤操作を防止 */}
       {(() => {
-        // Arm: DISARMED または LANDED からのみ。飛行中 / WT 中は禁止 (現在の飛行をリセットする事故防止)
-        const armEnabled = enabled && !busy && (currentPhase === 0 || currentPhase === 4);
-        // Land: LAUNCH または GLIDE のみ。それ以外では意味がない
+        // Arm: DISARMED からのみ (LANDED は DISARMED に統合済)。
+        //   飛行中 / WT 中は禁止 (現在の飛行をリセットする事故防止)
+        const armEnabled = enabled && !busy && currentPhase === 0;
+        // Land: LAUNCH または GLIDE のみ。それ以外では意味がない (PRELAUNCH なら Disarm 推奨)
         const landEnabled = enabled && !busy && (currentPhase === 2 || currentPhase === 3);
-        // Disarm: DISARMED 以外 (常に安全脱出として使える)
+        // Disarm: DISARMED 以外 (常に安全脱出として使える、trim は維持される)
         const disarmEnabled = enabled && !busy && currentPhase !== 0;
 
         const armTitle =
@@ -427,15 +429,15 @@ export function LaunchPanel({
           : currentPhase === 5 ? "WINDTUNNEL 中 (先に Exit してから)"
           : "PRELAUNCH へ遷移し、投擲を待機する";
         const landTitle =
-          currentPhase === 0 || currentPhase === 4
+          currentPhase === 0
             ? "LAUNCH / GLIDE 中のみ使えます"
           : currentPhase === 1 ? "PRELAUNCH では Disarm を使ってください"
-          : currentPhase === 5 ? "WINDTUNNEL では Disarm / Exit を使ってください"
-          : "強制 LANDED 遷移（手動着地、安全停止）";
+          : currentPhase === 5 ? "WINDTUNNEL では Exit / Disarm を使ってください"
+          : "飛行終了: trim を 0 にリセットして DISARMED に戻る";
         const disarmTitle =
           currentPhase === 0
             ? "すでに DISARMED 状態です"
-            : "DISARMED に戻す（地上テスト用 / 着地後 / 緊急脱出）";
+            : "DISARMED に戻す (trim は維持) — 中止 / 緊急脱出";
 
         return (
           <div className="flex items-center gap-3 flex-wrap">

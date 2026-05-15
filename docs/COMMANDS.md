@@ -72,8 +72,8 @@
 | `zero` | **取付角キャリブレーション**: 今の Madgwick 出力 (roll/pitch/yaw) を「0°」基準として記録。以降の PID / safeguard / テレメトリ はこの基準からの相対角になる。RAM 保持 (再起動でクリア)。フライト前に機体を水平に置いて実行 |
 | `unzero` | `zero` で設定したオフセットを解除して生 IMU 出力に戻す |
 | `arm` | **フェーズマシン開始**: DISARMED → PRELAUNCH。`|a|>launch_g` の連続検出を待ち、検知すると LAUNCH → GLIDE へ自動遷移。Arm 中は failsafe が抑制される |
-| `disarm` | DISARMED に戻す（地上テスト・回収後の復帰） |
-| `land` | **LANDED 遷移**（手動のみ。自動 LANDED は実装していない）。GLIDE から終わらせるための主要コマンド |
+| `disarm` | DISARMED に戻す。**trim は維持**（PRELAUNCH キャンセル時にユーザ設定値を守る用途、緊急脱出にも） |
+| `land` | **飛行終了**: trim を 0 にリセットしてから DISARMED に戻す。GLIDE / LAUNCH から終わらせる主要コマンド（旧 PHASE_LANDED は DISARMED に統合済） |
 | `phase` | 現在フェーズと経過時間を表示 |
 | `launch_g <g>` | 投擲判定の加速度しきい値 [g]。既定 2.5、範囲 1.0..8.0 |
 | `climb_ms <ms>` | LAUNCH フェーズの持続時間 [ms]。既定 1500、範囲 200..10000 |

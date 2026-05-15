@@ -1099,22 +1099,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_phase_buttons(self, phase_idx: int):
         """フェーズ依存のボタン enabled 状態を再計算する。
-        phase_idx: 0=DISARMED, 1=PRELAUNCH, 2=LAUNCH, 3=GLIDE, 4=LANDED, 5=WINDTUNNEL
+        phase_idx: 0=DISARMED, 1=PRELAUNCH, 2=LAUNCH, 3=GLIDE, 5=WINDTUNNEL
+        ※ 旧 PHASE_LANDED (=4) は DISARMED と機能的に同じため統合済 (新 firmware では到達しない)
 
         ルール:
-          - Arm: DISARMED / LANDED のみ (飛行中の再 Arm は事故になるため禁止)
-          - Land: LAUNCH / GLIDE のみ (それ以外では意味がない)
-          - Disarm: DISARMED 以外 (常に安全脱出として使える)
-          - Wind Tunnel: DISARMED / LANDED のみ (飛行中・WT 中は禁止)
+          - Arm: DISARMED のみ (飛行中の再 Arm は事故になるため禁止)
+          - Land: LAUNCH / GLIDE のみ (飛行中の終了に使う。trim をリセットして DISARMED に戻す)
+          - Disarm: DISARMED 以外 (常に安全脱出として使える、trim は維持)
+          - Wind Tunnel: DISARMED のみ (飛行中・WT 中は禁止)
         """
         is_disarmed = phase_idx == 0
-        is_landed   = phase_idx == 4
         is_wt       = phase_idx == 5
         in_flight   = phase_idx in (1, 2, 3)  # PRELAUNCH / LAUNCH / GLIDE
-        ready_for_new_flight = is_disarmed or is_landed
 
         if hasattr(self, "btn_arm"):
-            self.btn_arm.setEnabled(ready_for_new_flight)
+            self.btn_arm.setEnabled(is_disarmed)
         if hasattr(self, "btn_land"):
             # LAUNCH (2) または GLIDE (3) のみ
             self.btn_land.setEnabled(phase_idx in (2, 3))
@@ -1122,7 +1121,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.btn_disarm.setEnabled(not is_disarmed)
         if hasattr(self, "btn_wt"):
             # WT 中は再投入無意味、飛行中は禁止
-            self.btn_wt.setEnabled(ready_for_new_flight)
+            self.btn_wt.setEnabled(is_disarmed)
 
     # ---------- データ更新 ----------
     @QtCore.pyqtSlot(dict)

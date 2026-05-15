@@ -16,12 +16,15 @@ export type TelemetryFrame = {
   wall_ms: number;
 };
 
+// PHASE_NAMES の index は firmware の FlightPhase 値に対応。
+// LANDED (旧 phase=4) は DISARMED に統合済 (機能的に同じため)。
+// 互換性のため文字列としては配列に残してあり、旧 firmware からの phase=4 を表示できる。
 export const PHASE_NAMES = [
   "DISARMED",
   "PRELAUNCH",
   "LAUNCH",
   "GLIDE",
-  "LANDED",
+  "LANDED",     // 旧フェーズ。新 firmware では到達しない (DISARMED に統合)
   "WINDTUNNEL",
 ] as const;
 export type PhaseName = (typeof PHASE_NAMES)[number];

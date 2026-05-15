@@ -169,11 +169,13 @@ bool  tiltSafeguardTriggered = false;
 //   armed 中 (PHASE_DISARMED 以外) は failsafe を抑制（地上局接続が無くても飛行継続）。
 //   下位互換: `arm` → PRELAUNCH、`disarm` → DISARMED、`launch_g` も従来通り。
 enum FlightPhase {
-  PHASE_DISARMED   = 0,   // arm されていない（地上テスト用、failsafe 有効）
+  PHASE_DISARMED   = 0,   // arm されていない / 飛行終了後（地上テスト用、failsafe 有効）
+                          //   ※ 旧 LANDED と区別していたが「servos 中立 + MANUAL」が両者で同じため統合。
+                          //     `land` コマンドが trim を 0 にリセットしてここに戻し、`disarm` は trim を保持。
   PHASE_PRELAUNCH  = 1,   // armed、|a| > launch_g を待機（MANUAL ホールド）
   PHASE_LAUNCH     = 2,   // 投擲検知後 climb_ms まで（climb-out: 機首上げ）
   PHASE_GLIDE      = 3,   // 滑空（最良滑空 pitch）
-  PHASE_LANDED     = 4,   // 着地検出後（PID 停止、サーボ中立）
+  // PHASE_LANDED = 4 was removed (merged into DISARMED). Value reserved for backward-compat with old logs.
   PHASE_WINDTUNNEL = 5,   // 風洞試験: PID 常時 ON / 自動遷移なし / tilt safeguard +
                           //           failsafe + climb_ff を抑制。target[] を手動操作して応答計測。
 };
@@ -301,11 +303,7 @@ static void phaseTransition(FlightPhase newPhase) {
       autoSub  = SUB_PID;
       tiltSafeguardTriggered = false;
       break;
-    case PHASE_LANDED:
-      // 着地: サーボ中立、PID 停止
-      baseMode = MODE_MANUAL;
-      trimDeg[0] = trimDeg[1] = trimDeg[2] = 0.0f;
-      break;
+    // PHASE_LANDED は削除 (DISARMED と機能的に同じため統合)
     case PHASE_WINDTUNNEL:
       // 風洞: PID 即起動。target[] (ユーザ設定値) で動かす。tilt safeguard /
       //       failsafe / climb_ff はすべて他箇所で抑制される。
@@ -617,10 +615,14 @@ static void handleCommandLine(char* line) {
     phaseTransition(PHASE_DISARMED);
     return;
   }
-  // 強制 LANDED 遷移 (どのフェーズからでも有効、ユーザ要望: 手動着地)
-  //   例: GLIDE で自動 LANDED 条件が満たされない (振動環境、傾斜地等) ときの脱出口。
+  // `land`: 飛行終了処理。trim を 0 にリセットしてから DISARMED へ遷移。
+  //   旧 PHASE_LANDED は DISARMED と機能的に重複していたため統合。
+  //   `disarm` との違いは「trim リセットの有無」:
+  //     - `land`   = 飛行終了 (trim=0 にする → 次の地上テスト前にニュートラル)
+  //     - `disarm` = 中止 / 脱出 (trim を保持 → PRELAUNCH キャンセル時に設定値を守る)
   if (iequals(cmd, "land")) {
-    phaseTransition(PHASE_LANDED);
+    trimDeg[0] = trimDeg[1] = trimDeg[2] = 0.0f;
+    phaseTransition(PHASE_DISARMED);
     return;
   }
   // 風洞試験モード: PHASE_WINDTUNNEL に遷移。`disarm` で抜ける。

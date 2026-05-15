@@ -239,19 +239,19 @@ export function WindTunnelPanel({
         </div>
       </div>
 
-      {/* Enter / Exit (フェーズに応じて disable: WT 中は Enter 無効、DISARMED 中は Exit 無効) */}
+      {/* Enter / Exit (フェーズに応じて disable: WT 中は Enter 無効、それ以外は Exit 無効) */}
       {(() => {
         const inWT = currentPhase === 5;
         const inActiveFlight =
           currentPhase === 1 || currentPhase === 2 || currentPhase === 3;
-        // Enter: WT 中 or 飛行中は無効
+        // Enter: DISARMED のみ。WT 中は無意味、飛行中は飛行放棄になるため禁止
         const enterDisabled = !enabled || busy || inWT || inActiveFlight;
         const enterTitle = inWT
           ? "すでに WINDTUNNEL モードです"
           : inActiveFlight
             ? "飛行中は使えません (先に Disarm)"
             : "風洞試験モードへ遷移（PID 起動）";
-        // Exit: WT 中のみ有効 (DISARMED / 飛行中は無効)
+        // Exit: WT 中のみ有効 (他フェーズは LaunchPanel の Disarm を使う)
         const exitDisabled = !enabled || busy || !inWT;
         const exitTitle = inWT
           ? "DISARMED に戻る（PID 停止、target は維持）"
