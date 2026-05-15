@@ -51,7 +51,13 @@
   #define WDT_TIMEOUT_S 3
 #endif
 
-#define MEASURING_FREQ 50
+// 制御ループ周期 [Hz]。Madgwick・PID・テレメトリすべてこのレートで動く。
+// 旧 50Hz は宣言だけで、実測 ~32Hz だった (sensor read + Madgwick + radio TX が
+// ~11ms 消費、delay(20) 追加で計 31ms)。これだと filter.begin(50) と実周期が
+// 一致せず姿勢推定にバイアスが乗るため、実測に近い 30Hz に下げて宣言と実態を
+// 揃える。loop 末尾は固定 delay() でなく micros() ベースの絶対時刻ピリオドで
+// 駆動するので、実周期は ±数百 µs 精度で 30Hz に固定される。
+#define MEASURING_FREQ 30
 #define RADIO_SERIAL  Serial1
 #define DEBUG_SERIAL  Serial
 
@@ -93,13 +99,15 @@ float prevE[3] = {0, 0, 0};
 const float integralLimit = 200.0f;
 
 // ---- D-term low-pass filter ----
-//   D 項は de = (e - prevE) / dt で計算するため、dt=20ms (50Hz) では
-//   IMU 雑音が約 50倍に増幅され、サーボがバタつく (ぴくぴく) 主因になる。
+//   D 項は de = (e - prevE) / dt で計算するため、dt=33ms (30Hz) では
+//   IMU 雑音が約 30倍に増幅され、サーボがバタつく (ぴくぴく) 主因になる。
 //   1次 IIR LPF を掛けて高周波ノイズだけ落とす:
 //     dFilt[i] = α * dFilt[i] + (1-α) * de_raw
-//   既定 α=0.7 で時定数 ~67ms (≈ 2.4Hz cutoff)。
-//   `dfilter <alpha>` コマンドで動的調整、0 で従来の生 D 動作。
-float dFilterAlpha = 0.7f;
+//   既定 α=0.85 (30Hz サンプリングで時定数 ~189ms ≈ 0.84Hz cutoff)。
+//   実機ログでサーボの急変ピーク 6°/frame、残差 4.4° が観測されたため、
+//   α を従来 0.7 から 0.85 に強めて高周波抑制。
+//   `dfilter <alpha>` コマンドで動的調整、0 で生 D 動作。
+float dFilterAlpha = 0.85f;
 float dFilt[3] = {0.0f, 0.0f, 0.0f};
 
 // ---- attitude zero offset (取付角キャリブレーション) ----
@@ -266,7 +274,7 @@ static void printHelp() {
   radioPrintln("[INFO]   ping               heartbeat (silent, keeps uplink alive)");
   radioPrintln("[INFO]   failsafe <ms>      uplink-loss timeout (0 = disabled)");
   radioPrintln("[INFO]   safe_angle <deg>   tilt-safeguard threshold (0 or >=180 = disabled)");
-  radioPrintln("[INFO]   dfilter <alpha>    D-term LPF coefficient 0..0.99 (0 = raw, 0.7 default)");
+  radioPrintln("[INFO]   dfilter <alpha>    D-term LPF coefficient 0..0.99 (0 = raw, 0.85 default)");
   radioPrintln("[INFO]   zero               capture current attitude as 0deg reference");
   radioPrintln("[INFO]   unzero             clear zero offset (use raw IMU)");
 }
@@ -420,7 +428,7 @@ static void handleCommandLine(char* line) {
     char* arg = nextToken(p);
     float v;
     if (!arg || !parseFloat(arg, &v) || v < 0.0f || v >= 1.0f) {
-      radioPrintln("[INFO] usage: dfilter <alpha 0..0.99>  (0 = raw, 0.7 default)");
+      radioPrintln("[INFO] usage: dfilter <alpha 0..0.99>  (0 = raw, 0.85 default)");
       return;
     }
     dFilterAlpha = v;
@@ -524,6 +532,11 @@ void setup() {
 }
 
 void loop() {
+  // 絶対時刻ベースの周期計時。loop 本体が変動 (radio TX 等で時々長くなる) しても
+  // 平均周期は 1/MEASURING_FREQ に保たれる。
+  const uint32_t kLoopPeriodUs = 1000000UL / MEASURING_FREQ;
+  uint32_t loopStartUs = micros();
+
   wdtKick();
   pollSerialCommands();
 
@@ -697,5 +710,11 @@ void loop() {
   }
 
   srcSeq++;
-  delay(1000 / MEASURING_FREQ);
+
+  // 周期合わせ: loop 開始時刻からの経過 µs を見て、不足分だけ sleep する。
+  // 本体が周期を超過した場合は即次ループへ (キャッチアップせず単に遅れたままに)。
+  uint32_t elapsedUs = micros() - loopStartUs;
+  if (elapsedUs < kLoopPeriodUs) {
+    delayMicroseconds(kLoopPeriodUs - elapsedUs);
+  }
 }

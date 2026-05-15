@@ -52,13 +52,16 @@ const AXIS_IDX: Record<Axis, number> = { r: 0, p: 1, y: 2 };
 
 const STORAGE_KEY = "glider-webui:pid_gains";
 const DFILTER_STORAGE_KEY = "glider-webui:dfilter";
-const DFILTER_DEFAULT = 0.7;
+const DFILTER_DEFAULT = 0.85;
+// サンプリング周期 = 1/MEASURING_FREQ (firmware で 30Hz, 33.3ms)。
+// cutoff [Hz] = 1 / (2π τ),  τ = dt * α / (1-α)
+const SAMPLE_DT_SEC = 1 / 30;
 const DFILTER_PRESETS: { value: number; label: string; hint: string }[] = [
   { value: 0,    label: "0 (raw)",  hint: "フィルタ無し (生 D)" },
-  { value: 0.5,  label: "0.5",      hint: "軽 (~8 Hz)" },
-  { value: 0.7,  label: "0.7",      hint: "標準 (~2.4 Hz)" },
-  { value: 0.85, label: "0.85",     hint: "強 (~1.2 Hz)" },
-  { value: 0.95, label: "0.95",     hint: "最大 (~0.4 Hz)" },
+  { value: 0.5,  label: "0.5",      hint: "軽 (~4.8 Hz)" },
+  { value: 0.7,  label: "0.7",      hint: "中 (~2.0 Hz)" },
+  { value: 0.85, label: "0.85",     hint: "標準 (~0.84 Hz)" },
+  { value: 0.95, label: "0.95",     hint: "最大 (~0.25 Hz)" },
 ];
 
 /** State: 12個の値を { kp_r: number, kp_p: number, ... } で扱う */
@@ -241,12 +244,11 @@ export function GainPanel({
     [dfilter, enabled, dfilterBusy, onSend],
   );
 
-  // dfilter の参考カットオフ周波数 (50Hz サンプリング, 1次 IIR)
+  // dfilter の参考カットオフ周波数 (30Hz サンプリング, 1次 IIR)
   const dfilterCutoffHz = (a: number) => {
     if (a <= 0) return Infinity;
     if (a >= 1) return 0;
-    const dt = 0.02; // 50Hz
-    const tau = (dt * a) / (1 - a);
+    const tau = (SAMPLE_DT_SEC * a) / (1 - a);
     return 1 / (2 * Math.PI * tau);
   };
 
@@ -425,7 +427,7 @@ export function GainPanel({
               D-term LPF · D 項ローパスフィルタ
             </div>
             <div className="text-[11px] text-glider-textMute mt-0.5 leading-snug">
-              D 項は <code className="font-mono text-glider-textDim">(e - prevE) / dt</code> で計算され dt=20ms では IMU 雑音を約 50倍に増幅します。
+              D 項は <code className="font-mono text-glider-textDim">(e - prevE) / dt</code> で計算され dt=33ms (30Hz) では IMU 雑音を約 30倍に増幅します。
               <strong>サーボの「ぴくぴく」の主因。</strong>1次 IIR で高周波だけ落とします。
               0 = 生 D / 大 = 滑らか (応答は遅延)
             </div>
@@ -537,7 +539,7 @@ export function GainPanel({
                 : "∞"}
             </span>
             <span className="text-[9px] text-glider-textMute font-mono">
-              @ 50 Hz サンプリング
+              @ 30 Hz サンプリング
             </span>
           </div>
         </div>
