@@ -51,6 +51,15 @@ const AXES: { letter: Axis; label: string; color: string }[] = [
 const AXIS_IDX: Record<Axis, number> = { r: 0, p: 1, y: 2 };
 
 const STORAGE_KEY = "glider-webui:pid_gains";
+const DFILTER_STORAGE_KEY = "glider-webui:dfilter";
+const DFILTER_DEFAULT = 0.7;
+const DFILTER_PRESETS: { value: number; label: string; hint: string }[] = [
+  { value: 0,    label: "0 (raw)",  hint: "フィルタ無し (生 D)" },
+  { value: 0.5,  label: "0.5",      hint: "軽 (~8 Hz)" },
+  { value: 0.7,  label: "0.7",      hint: "標準 (~2.4 Hz)" },
+  { value: 0.85, label: "0.85",     hint: "強 (~1.2 Hz)" },
+  { value: 0.95, label: "0.95",     hint: "最大 (~0.4 Hz)" },
+];
 
 /** State: 12個の値を { kp_r: number, kp_p: number, ... } で扱う */
 type GainsState = Record<string, number>; // key = `${param}_${axis}`
@@ -82,11 +91,18 @@ export function GainPanel({
   const [applied, setApplied] = useState<GainsState>(defaults());
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
+  // D-term LPF (機体側 dfilter コマンド) の値
+  const [dfilter, setDfilter] = useState<number>(DFILTER_DEFAULT);
+  const [dfilterApplied, setDfilterApplied] = useState<number>(DFILTER_DEFAULT);
+  const [dfilterBusy, setDfilterBusy] = useState(false);
+
   // closure 経由ではなく ref で最新を読む
   const valuesRef = useRef(values);
   valuesRef.current = values;
   const appliedRef = useRef(applied);
   appliedRef.current = applied;
+  const dfilterAppliedRef = useRef(dfilterApplied);
+  dfilterAppliedRef.current = dfilterApplied;
 
   // 初期値ロード
   useEffect(() => {
@@ -103,6 +119,14 @@ export function GainPanel({
         }
         setValues(next);
         setApplied(next);
+      }
+      const df = window.localStorage.getItem(DFILTER_STORAGE_KEY);
+      if (df != null) {
+        const n = parseFloat(df);
+        if (Number.isFinite(n) && n >= 0 && n < 1) {
+          setDfilter(n);
+          setDfilterApplied(n);
+        }
       }
     } catch {
       // ignore
@@ -134,6 +158,12 @@ export function GainPanel({
             return;
           }
         }
+      }
+      // dfilter も送信
+      try {
+        await onSend(`dfilter ${dfilterAppliedRef.current.toFixed(3)}`);
+      } catch {
+        // ignore
       }
     })();
   }, [enabled, onSend]);
@@ -187,6 +217,38 @@ export function GainPanel({
     const d = defaults();
     setValues(d);
   }, []);
+
+  const applyDfilter = useCallback(
+    async (value?: number) => {
+      const v = Math.max(0, Math.min(0.99, value ?? dfilter));
+      if (!enabled || dfilterBusy) return;
+      setDfilterBusy(true);
+      try {
+        await onSend(`dfilter ${v.toFixed(3)}`);
+        setDfilterApplied(v);
+        setDfilter(v);
+        try {
+          window.localStorage.setItem(DFILTER_STORAGE_KEY, String(v));
+        } catch {
+          // ignore
+        }
+      } catch (e) {
+        console.error("[GainPanel] dfilter failed:", e);
+      } finally {
+        setDfilterBusy(false);
+      }
+    },
+    [dfilter, enabled, dfilterBusy, onSend],
+  );
+
+  // dfilter の参考カットオフ周波数 (50Hz サンプリング, 1次 IIR)
+  const dfilterCutoffHz = (a: number) => {
+    if (a <= 0) return Infinity;
+    if (a >= 1) return 0;
+    const dt = 0.02; // 50Hz
+    const tau = (dt * a) / (1 - a);
+    return 1 / (2 * Math.PI * tau);
+  };
 
   const dirtyCount = Object.keys(values).filter(
     (k) => values[k] !== applied[k],
@@ -355,9 +417,136 @@ export function GainPanel({
         </table>
       </div>
 
+      {/* ============ D-term LPF ============ */}
+      <div className="border-t border-glider-border/50 pt-3 space-y-2">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <div className="text-sm font-bold text-glider-text">
+              D-term LPF · D 項ローパスフィルタ
+            </div>
+            <div className="text-[11px] text-glider-textMute mt-0.5 leading-snug">
+              D 項は <code className="font-mono text-glider-textDim">(e - prevE) / dt</code> で計算され dt=20ms では IMU 雑音を約 50倍に増幅します。
+              <strong>サーボの「ぴくぴく」の主因。</strong>1次 IIR で高周波だけ落とします。
+              0 = 生 D / 大 = 滑らか (応答は遅延)
+            </div>
+          </div>
+          <div
+            className={`text-[10px] font-bold tracking-wider px-2 py-1 rounded ${
+              dfilterApplied === 0
+                ? "bg-glider-warn/10 text-glider-warn"
+                : "bg-glider-ok/10 text-glider-ok"
+            }`}
+          >
+            {dfilterApplied === 0 ? "RAW (no filter)" : `α=${dfilterApplied.toFixed(2)}`}
+          </div>
+        </div>
+
+        <div className="flex items-end gap-3 flex-wrap">
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
+              α (0..0.99)
+            </label>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setDfilter((v) => Math.max(0, Math.round((v - 0.05) * 100) / 100))}
+                className="btn-ghost px-2 py-1.5 text-sm"
+              >
+                −
+              </button>
+              <input
+                type="number"
+                min={0}
+                max={0.99}
+                step={0.05}
+                value={dfilter}
+                onChange={(e) => {
+                  const n = parseFloat(e.target.value);
+                  setDfilter(
+                    Number.isFinite(n) ? Math.max(0, Math.min(0.99, n)) : 0,
+                  );
+                }}
+                onBlur={() => {
+                  if (enabled && dfilter !== dfilterApplied) applyDfilter();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+                className={`bg-glider-surface border rounded text-center
+                            px-2 py-1.5 w-20 text-sm font-mono font-bold
+                            focus:outline-none focus:ring-1 focus:ring-glider-accent/40
+                            ${
+                              dfilter !== dfilterApplied
+                                ? "border-glider-warn text-glider-warn"
+                                : "border-glider-border text-glider-text"
+                            }`}
+              />
+              <button
+                type="button"
+                onClick={() => setDfilter((v) => Math.min(0.99, Math.round((v + 0.05) * 100) / 100))}
+                className="btn-ghost px-2 py-1.5 text-sm"
+              >
+                +
+              </button>
+            </div>
+          </div>
+
+          <button
+            onClick={() => applyDfilter()}
+            disabled={!enabled || dfilterBusy || dfilter === dfilterApplied}
+            className="btn-primary"
+          >
+            {dfilterBusy ? "..." : "Apply"}
+          </button>
+
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
+              Presets
+            </span>
+            <div className="flex gap-1 flex-wrap">
+              {DFILTER_PRESETS.map((p) => (
+                <button
+                  key={p.value}
+                  onClick={() => applyDfilter(p.value)}
+                  disabled={!enabled || dfilterBusy}
+                  title={p.hint}
+                  className={`px-2.5 py-1.5 text-xs font-bold rounded-md border transition ${
+                    Math.abs(dfilterApplied - p.value) < 0.001
+                      ? p.value === 0
+                        ? "bg-glider-warn/15 border-glider-warn text-glider-warn"
+                        : "bg-glider-accent/15 border-glider-accent text-glider-accent"
+                      : "bg-glider-surface border-glider-border text-glider-textDim hover:border-glider-borderHi"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-0.5 ml-auto text-right">
+            <span className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
+              ~Cutoff
+            </span>
+            <span className="font-mono text-sm text-glider-text">
+              {Number.isFinite(dfilterCutoffHz(dfilter))
+                ? `${dfilterCutoffHz(dfilter).toFixed(1)} Hz`
+                : "∞"}
+            </span>
+            <span className="text-[9px] text-glider-textMute font-mono">
+              @ 50 Hz サンプリング
+            </span>
+          </div>
+        </div>
+      </div>
+
       <div className="text-[10px] text-glider-textMute font-mono">
         送信フォーマット: <code className="text-glider-textDim">kp p 1.5</code> /{" "}
-        <code className="text-glider-textDim">target r 0</code> など (Python ground_station と互換)
+        <code className="text-glider-textDim">target r 0</code> /{" "}
+        <code className="text-glider-textDim">dfilter 0.7</code> など (Python ground_station と互換)
       </div>
     </div>
   );

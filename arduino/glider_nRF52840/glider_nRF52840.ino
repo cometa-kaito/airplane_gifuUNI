@@ -92,6 +92,16 @@ float integralE[3] = {0, 0, 0};
 float prevE[3] = {0, 0, 0};
 const float integralLimit = 200.0f;
 
+// ---- D-term low-pass filter ----
+//   D 項は de = (e - prevE) / dt で計算するため、dt=20ms (50Hz) では
+//   IMU 雑音が約 50倍に増幅され、サーボがバタつく (ぴくぴく) 主因になる。
+//   1次 IIR LPF を掛けて高周波ノイズだけ落とす:
+//     dFilt[i] = α * dFilt[i] + (1-α) * de_raw
+//   既定 α=0.7 で時定数 ~67ms (≈ 2.4Hz cutoff)。
+//   `dfilter <alpha>` コマンドで動的調整、0 で従来の生 D 動作。
+float dFilterAlpha = 0.7f;
+float dFilt[3] = {0.0f, 0.0f, 0.0f};
+
 // ---- telemetry ----
 uint32_t srcSeq = 0;
 uint32_t prevUs = 0;
@@ -218,8 +228,8 @@ static void printStatus() {
   );
   radioPrintln(buf);
   snprintf(buf, sizeof(buf),
-    "[STATUS] safe_angle=%.1fdeg tripped=%s",
-    tiltSafeguardDeg, tiltSafeguardTriggered ? "YES" : "no");
+    "[STATUS] safe_angle=%.1fdeg tripped=%s dfilter=%.3f",
+    tiltSafeguardDeg, tiltSafeguardTriggered ? "YES" : "no", dFilterAlpha);
   radioPrintln(buf);
 }
 
@@ -243,6 +253,7 @@ static void printHelp() {
   radioPrintln("[INFO]   ping               heartbeat (silent, keeps uplink alive)");
   radioPrintln("[INFO]   failsafe <ms>      uplink-loss timeout (0 = disabled)");
   radioPrintln("[INFO]   safe_angle <deg>   tilt-safeguard threshold (0 or >=180 = disabled)");
+  radioPrintln("[INFO]   dfilter <alpha>    D-term LPF coefficient 0..0.99 (0 = raw, 0.7 default)");
 }
 
 // =============================================================
@@ -349,6 +360,23 @@ static void handleCommandLine(char* line) {
     failsafeTimeoutMs = (uint32_t)v;
     char buf[64];
     snprintf(buf, sizeof(buf), "[PARAM] failsafe=%lums", (unsigned long)failsafeTimeoutMs);
+    radioPrintln(buf);
+    return;
+  }
+
+  // D 項 LPF 係数の設定 (PID チューニング用)
+  if (iequals(cmd, "dfilter")) {
+    char* arg = nextToken(p);
+    float v;
+    if (!arg || !parseFloat(arg, &v) || v < 0.0f || v >= 1.0f) {
+      radioPrintln("[INFO] usage: dfilter <alpha 0..0.99>  (0 = raw, 0.7 default)");
+      return;
+    }
+    dFilterAlpha = v;
+    // フィルタ内部状態も初期化 (急な係数変更で過去状態を引きずらせない)
+    for (int i = 0; i < 3; i++) dFilt[i] = 0.0f;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "[PARAM] dfilter=%.3f", dFilterAlpha);
     radioPrintln(buf);
     return;
   }
@@ -514,6 +542,7 @@ void loop() {
     for (int i = 0; i < 3; i++) {
       prevE[i] = target[i] - Q[i];
       if (autoSub != SUB_PID) integralE[i] = 0.0f;
+      dFilt[i] = 0.0f;  // フィルタ状態も古いので破棄
     }
     prevBase = baseMode;
     prevSub  = autoSub;
@@ -533,7 +562,11 @@ void loop() {
 
     float de = 0.0f;
     if (baseMode == MODE_AUTO && (autoSub == SUB_PD || autoSub == SUB_PID)) {
-      de = (e - prevE[i]) / dt;
+      float deRaw = (e - prevE[i]) / dt;
+      // 1次 IIR LPF: dFilt = α·dFilt + (1-α)·deRaw
+      // α=0 で従来通り (生 D), α が大きいほど滑らか。
+      dFilt[i] = dFilterAlpha * dFilt[i] + (1.0f - dFilterAlpha) * deRaw;
+      de = dFilt[i];
     }
     prevE[i] = e;
 
