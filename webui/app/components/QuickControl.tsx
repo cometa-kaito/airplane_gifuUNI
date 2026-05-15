@@ -129,8 +129,11 @@ export function QuickControl({
           break;
         case "a":
         case "A":
-          onSend("auto").catch(() => undefined);
-          setLastAction("→ AUTO");
+          // AUTO は実用上ほぼ常に PID で使うため、`3` (= MODE_AUTO + SUB_PID) を送る。
+          // (`auto` 単体だと firmware の autoSub が前回値のまま=既定 P のため、
+          //  ユーザが「PID で飛ばすつもり」のときに無音で P 制御に落ちる事故を防ぐ)
+          onSend("3").catch(() => undefined);
+          setLastAction("→ AUTO/PID");
           break;
       }
     };
@@ -146,29 +149,38 @@ export function QuickControl({
     "disabled:opacity-40 disabled:cursor-not-allowed";
 
   return (
-    <div className="card-pad space-y-3">
+    <div className="card-pad space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <div className="section-title">Quick Manual Control</div>
-          <div className="text-[11px] text-glider-textMute mt-1 leading-snug">
+          <h3 className="text-base font-semibold text-slate-800 tracking-tight">
+            Quick Manual Control
+          </h3>
+          <div className="text-xs text-slate-500 mt-1 leading-snug">
             ボタン or キーボード <kbd className="kbd">↑↓←→</kbd> /{" "}
             <kbd className="kbd">Space</kbd> /{" "}
-            <kbd className="kbd">M</kbd>/<kbd className="kbd">A</kbd> でモード切替
+            <kbd className="kbd">M</kbd> (Manual) /{" "}
+            <kbd className="kbd">A</kbd> (Auto/PID)
           </div>
         </div>
         <div
-          className={`text-[10px] font-bold tracking-wider px-2 py-1 rounded ${
+          className={`inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full ${
             enabled
-              ? "bg-glider-ok/10 text-glider-ok"
-              : "bg-glider-textMute/10 text-glider-textMute"
+              ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100"
+              : "bg-slate-100 text-slate-500 ring-1 ring-slate-200"
           }`}
         >
-          {enabled ? "READY" : "DISCONNECTED"}
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              enabled ? "bg-emerald-500" : "bg-slate-400"
+            }`}
+            aria-hidden
+          />
+          {enabled ? "Ready" : "Disconnected"}
         </div>
       </div>
 
       {/* Status row */}
-      <div className="bg-glider-surface border border-glider-border rounded-md px-3 py-2 flex items-center gap-4 flex-wrap font-mono">
+      <div className="bg-slate-50 rounded-md px-3 py-2 flex items-center gap-4 flex-wrap font-mono">
         <div className="flex items-baseline gap-1.5">
           <span className="text-[10px] uppercase tracking-wider text-glider-textMute">
             R Ail
@@ -301,9 +313,9 @@ export function QuickControl({
           </div>
         </div>
 
-        {/* Mode shortcuts */}
-        <div className="flex flex-col gap-1">
-          <span className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
+        {/* Mode shortcuts: MANUAL / AUTO(=PID) を主要ボタンに、P / PD は補助 */}
+        <div className="flex flex-col gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
             Mode
           </span>
           <div className="flex flex-col gap-1.5">
@@ -313,22 +325,71 @@ export function QuickControl({
                 setLastAction("→ MANUAL");
               }}
               disabled={!enabled}
-              className="btn-ghost text-xs"
+              className="btn-ghost text-xs min-w-[120px]"
               title="MANUAL (M キー)"
             >
               MANUAL
             </button>
             <button
               onClick={() => {
-                onSend("auto").catch(() => undefined);
-                setLastAction("→ AUTO");
+                // AUTO は実用上 PID 一択なので `3` を送る (P 制御で無音に落ちる事故を防止)
+                onSend("3").catch(() => undefined);
+                setLastAction("→ AUTO/PID");
               }}
               disabled={!enabled}
-              className="btn-ghost text-xs"
-              title="AUTO (A キー)"
+              className="btn-primary text-xs min-w-[120px]"
+              title="AUTO/PID (A キー)。フル PID 制御で起動"
             >
-              AUTO
+              AUTO <span className="opacity-80 text-[10px] ml-0.5">(PID)</span>
             </button>
+            {/* 高度なサブモード切替 (P / PD): 通常は使わない */}
+            <div className="flex items-center gap-1 mt-1">
+              <span className="text-[9px] uppercase tracking-wider text-slate-400 mr-1">
+                sub
+              </span>
+              <button
+                onClick={() => {
+                  onSend("1").catch(() => undefined);
+                  setLastAction("→ AUTO/P");
+                }}
+                disabled={!enabled}
+                className="flex-1 px-2 py-1 text-[10px] font-semibold rounded
+                           bg-white ring-1 ring-slate-200 text-slate-600
+                           hover:bg-slate-50 hover:ring-slate-300
+                           disabled:opacity-40"
+                title="P 制御のみ (デバッグ用)"
+              >
+                P
+              </button>
+              <button
+                onClick={() => {
+                  onSend("2").catch(() => undefined);
+                  setLastAction("→ AUTO/PD");
+                }}
+                disabled={!enabled}
+                className="flex-1 px-2 py-1 text-[10px] font-semibold rounded
+                           bg-white ring-1 ring-slate-200 text-slate-600
+                           hover:bg-slate-50 hover:ring-slate-300
+                           disabled:opacity-40"
+                title="PD 制御 (I 抜き)"
+              >
+                PD
+              </button>
+              <button
+                onClick={() => {
+                  onSend("3").catch(() => undefined);
+                  setLastAction("→ AUTO/PID");
+                }}
+                disabled={!enabled}
+                className="flex-1 px-2 py-1 text-[10px] font-semibold rounded
+                           bg-indigo-50 ring-1 ring-indigo-200 text-indigo-700
+                           hover:bg-indigo-100 hover:ring-indigo-300
+                           disabled:opacity-40"
+                title="PID 制御 (既定)"
+              >
+                PID
+              </button>
+            </div>
           </div>
         </div>
       </div>

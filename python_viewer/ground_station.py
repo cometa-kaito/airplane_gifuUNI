@@ -539,7 +539,8 @@ class MainWindow(QtWidgets.QMainWindow):
         sc("Space", self._cmd_center)
         # 数字キーでモード切替
         sc("M",     lambda: self._send_and_log("manual"))
-        sc("A",     lambda: self._send_and_log("auto"))
+        # A キーは AUTO/PID (= 3) を送る。`auto` 単体だと autoSub が SUB_P のままになる
+        sc("A",     lambda: self._send_and_log("3"))
         sc("1",     lambda: self._send_and_log("1"))
         sc("2",     lambda: self._send_and_log("2"))
         sc("3",     lambda: self._send_and_log("3"))
@@ -877,10 +878,13 @@ class MainWindow(QtWidgets.QMainWindow):
         ctl_layout.setColumnStretch(0, 0)
 
         # ---- モードボタン ----
+        # 注意: AUTO ボタンは `3` (= MODE_AUTO + SUB_PID) を送信する。
+        # firmware の `auto` 単体だと autoSub が前回値 (boot 時は SUB_P) のままで、
+        # ユーザが「PID で動かしているつもり」が P 制御のままになる事故を防止。
         row = 0
         ctl_layout.addWidget(QtWidgets.QLabel("Mode:"), row, 0)
         for col, (label, cmd) in enumerate([
-            ("MANUAL", "manual"), ("AUTO", "auto"),
+            ("MANUAL", "manual"), ("AUTO/PID", "3"),
             ("P", "1"), ("PD", "2"), ("PID", "3"),
         ]):
             btn = QtWidgets.QPushButton(label)
