@@ -75,6 +75,12 @@ body {
     @apply bg-glider-accent text-black border-glider-accent
            shadow-[0_0_18px_rgba(56,189,248,0.25)] hover:brightness-110;
   }
+
+  .kbd {
+    @apply inline-block px-1.5 py-0.5 text-[10px] font-mono font-semibold
+           bg-glider-surface border border-glider-border rounded
+           text-glider-textDim;
+  }
 }
 
 /* Style uPlot to match dark theme */

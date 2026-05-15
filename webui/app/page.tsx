@@ -16,6 +16,7 @@ import { AccelChart } from "./components/AccelChart";
 import { Glider3D } from "./components/Glider3D";
 import { RateMeter } from "./components/RateMeter";
 import { RecorderPanel } from "./components/RecorderPanel";
+import { QuickControl } from "./components/QuickControl";
 import type { TelemetryFrame } from "./hooks/useTelemetry";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8765";
@@ -149,6 +150,12 @@ export default function Page() {
 
         {/* SECONDARY TELEMETRY (IMU & system) */}
         <TelemetryPanel attitudeRef={attitudeRef} />
+
+        {/* QUICK MANUAL CONTROL — D-pad + keyboard */}
+        <QuickControl
+          onSend={mode === "websocket" ? wsHook.sendCommand : wsSerial.sendCommand}
+          enabled={status === "open"}
+        />
 
         {/* COMMAND */}
         <CommandPanel

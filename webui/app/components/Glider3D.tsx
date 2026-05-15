@@ -2,62 +2,44 @@
 
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Grid } from "@react-three/drei";
-import { useRef, memo } from "react";
+import { useRef, memo, useState, useEffect } from "react";
 import type { MutableRefObject } from "react";
 import * as THREE from "three";
 import type { TelemetryFrame } from "../hooks/useTelemetry";
+import { PlaneModel } from "./PlaneModel";
+import {
+  PRESET_ORDER,
+  PRESETS,
+  getPreset,
+  type PresetKey,
+} from "../lib/planeSpecs";
 
 const RAD = Math.PI / 180;
+const PRESET_STORAGE_KEY = "glider-webui:preset";
 
 /**
  * 機体本体。React 再レンダではなく useFrame で毎 GL フレームに ref を読み取り更新する。
- * これにより親の state 変化と切り離され、姿勢更新でページが再レンダされない。
  */
-function Plane({
+function PlaneWithAttitude({
   attitudeRef,
+  specName,
 }: {
   attitudeRef: MutableRefObject<TelemetryFrame | null>;
+  specName: PresetKey;
 }) {
   const groupRef = useRef<THREE.Group>(null!);
 
   useFrame(() => {
     const a = attitudeRef.current;
     if (!a || !groupRef.current) return;
-    groupRef.current.rotation.set(
-      a.pitch * RAD,
-      a.yaw * RAD,
-      a.roll * RAD,
-    );
+    groupRef.current.rotation.set(a.pitch * RAD, a.yaw * RAD, a.roll * RAD);
   });
+
+  const spec = getPreset(specName);
 
   return (
     <group ref={groupRef}>
-      <mesh position={[0, 0, 0]} castShadow>
-        <boxGeometry args={[0.25, 0.25, 3]} />
-        <meshStandardMaterial color="#e2e8f0" metalness={0.3} roughness={0.6} />
-      </mesh>
-      <mesh position={[0, 0, 1.8]} rotation={[Math.PI / 2, 0, 0]} castShadow>
-        <coneGeometry args={[0.18, 0.6, 16]} />
-        <meshStandardMaterial color="#f8fafc" metalness={0.3} roughness={0.5} />
-      </mesh>
-      <group position={[0, 0.1, 0]}>
-        <mesh position={[1.25, 0.05, 0]} rotation={[0, 0, 5 * RAD]} castShadow>
-          <boxGeometry args={[2.5, 0.04, 0.8]} />
-          <meshStandardMaterial color="#ffd43b" metalness={0.2} roughness={0.5} />
-        </mesh>
-        <mesh position={[-1.25, 0.05, 0]} rotation={[0, 0, -5 * RAD]} castShadow>
-          <boxGeometry args={[2.5, 0.04, 0.8]} />
-          <meshStandardMaterial color="#ffd43b" metalness={0.2} roughness={0.5} />
-        </mesh>
-      </group>
-      <mesh position={[0, 0.05, -1.4]} castShadow>
-        <boxGeometry args={[1.5, 0.04, 0.4]} />
-        <meshStandardMaterial color="#ff922b" metalness={0.2} roughness={0.5} />
-      </mesh>
-      <mesh position={[0, 0.3, -1.4]} castShadow>
-        <boxGeometry args={[0.04, 0.5, 0.4]} />
-        <meshStandardMaterial color="#e03131" metalness={0.2} roughness={0.5} />
-      </mesh>
+      <PlaneModel spec={spec} />
     </group>
   );
 }
@@ -72,10 +54,9 @@ function Axes() {
   );
 }
 
-function AxisLabels() {
+function AxisDots() {
   return (
     <group>
-      {/* No textGeometry to keep deps small — small spheres for legend reference */}
       <mesh position={[2.2, 0, 0]}>
         <sphereGeometry args={[0.06, 12, 12]} />
         <meshBasicMaterial color="#ff5d6c" />
@@ -97,11 +78,54 @@ function Glider3DImpl({
 }: {
   attitudeRef: MutableRefObject<TelemetryFrame | null>;
 }) {
+  // SSR-safe localStorage 読み込み
+  const [preset, setPresetState] = useState<PresetKey>("default");
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem(PRESET_STORAGE_KEY);
+      if (v && (PRESET_ORDER as readonly string[]).includes(v)) {
+        setPresetState(v as PresetKey);
+      }
+    } catch {
+      // ignore
+    }
+    setHydrated(true);
+  }, []);
+
+  const setPreset = (p: PresetKey) => {
+    setPresetState(p);
+    try {
+      window.localStorage.setItem(PRESET_STORAGE_KEY, p);
+    } catch {
+      // ignore
+    }
+  };
+
+  const currentSpec = PRESETS[preset];
+
   return (
-    <div className="card relative overflow-hidden h-full min-h-[360px]">
-      <div className="absolute top-3 left-3 z-10 flex items-center gap-2 pointer-events-none">
+    <div className="card relative overflow-hidden h-full min-h-[420px]">
+      <div className="absolute top-3 left-3 z-10 flex items-center gap-3 pointer-events-auto">
         <span className="section-title">3D Attitude</span>
+        <select
+          value={preset}
+          onChange={(e) => setPreset(e.target.value as PresetKey)}
+          className="bg-glider-surface border border-glider-border rounded-md
+                     text-xs text-glider-text font-mono
+                     px-2 py-1 focus:outline-none focus:border-glider-accent
+                     hover:border-glider-borderHi cursor-pointer"
+          title="機体形状プリセット"
+        >
+          {PRESET_ORDER.map((key) => (
+            <option key={key} value={key}>
+              {PRESETS[key].label}
+            </option>
+          ))}
+        </select>
       </div>
+
       <div className="absolute top-3 right-3 z-10 flex flex-col gap-1 text-[10px] font-mono pointer-events-none">
         <span className="flex items-center gap-1.5 text-glider-roll">
           <i className="inline-block w-2 h-2 rounded-sm bg-glider-roll" /> X / Roll
@@ -113,6 +137,13 @@ function Glider3DImpl({
           <i className="inline-block w-2 h-2 rounded-sm bg-glider-yaw" /> Z / Pitch axis
         </span>
       </div>
+
+      {hydrated && (
+        <div className="absolute bottom-12 left-3 z-10 text-[10px] text-glider-textMute font-mono max-w-[60%] pointer-events-none">
+          {currentSpec.description}
+        </div>
+      )}
+
       <div className="absolute bottom-2 right-3 z-10 text-[10px] text-glider-textMute font-mono pointer-events-none">
         drag to orbit · scroll to zoom
       </div>
@@ -125,9 +156,9 @@ function Glider3DImpl({
         }}
         frameloop="always"
       >
-        <ambientLight intensity={0.45} />
+        <ambientLight intensity={0.5} />
         <directionalLight position={[5, 8, 5]} intensity={0.9} />
-        <directionalLight position={[-5, 4, -3]} intensity={0.25} color="#5cc8ff" />
+        <directionalLight position={[-5, 4, -3]} intensity={0.3} color="#5cc8ff" />
         <Grid
           args={[20, 20]}
           position={[0, -1.5, 0]}
@@ -138,8 +169,8 @@ function Glider3DImpl({
           infiniteGrid
         />
         <Axes />
-        <AxisLabels />
-        <Plane attitudeRef={attitudeRef} />
+        <AxisDots />
+        <PlaneWithAttitude attitudeRef={attitudeRef} specName={preset} />
         <OrbitControls enableDamping dampingFactor={0.1} />
       </Canvas>
     </div>
