@@ -24,9 +24,12 @@
 //    その後 500ms の grace 期間は PID 出力をゼロホールド（Madgwick が
 //    投擲ショックから復帰する猶予）。その後 PID 制御開始。
 //
-//  CSV テレメトリ (15 列):
+//  CSV テレメトリ (17 列):
 //    seq, t_ms, dt_ms, ax, ay, az, gx, gy, gz,
-//    roll, pitch, yaw, s0(右エルロン), s1(左エルロン), s2(エレベータ)
+//    roll, pitch, yaw, s0(右エルロン), s1(左エルロン), s2(エレベータ),
+//    phase(0..4), accel_g(|a|)
+//    ※ 旧 15 列パーサとの互換性のため、付属 Python/WebUI viewer は
+//      「列数 >= 15」を受理する下位互換実装。phase/accel_g 不明時は 0 扱い。
 //
 //  コマンド (Serial1 行末 LF):
 //    m / manual         -> MANUAL（trim をそのままサーボへ）
@@ -105,7 +108,9 @@ float aileronMixR = +1.0f;
 
 float integralE[3] = {0, 0, 0};
 float prevE[3] = {0, 0, 0};
-const float integralLimit = 200.0f;
+// integralLimit: Ki=0.2 のとき I 単独で ±10°相当 (= 50 * 0.2) になる物理意味のある値。
+// (旧値 200 では I 単独 ±40° → サーボ可動 ±90° のうち半分近くを占有する暴走源だった)
+const float integralLimit = 50.0f;
 
 // ---- D-term low-pass filter ----
 //   D 項は de = (e - prevE) / dt で計算するため、dt=33ms (30Hz) では
@@ -149,25 +154,54 @@ bool failsafeActive = false;
 float tiltSafeguardDeg = 60.0f;     // 既定 60°
 bool  tiltSafeguardTriggered = false;
 
-// ---- 投擲検知 (launch detection / auto-arm) ----
-//   `arm` で armed=true / MANUAL ホールドへ。
-//   |a| が launchAccelG を LAUNCH_TRIGGER_FRAMES 連続で超えたら launched=true、
-//   AUTO/PID へ自動遷移。投擲後 LAUNCH_GRACE_MS 間は PID 出力をゼロホールド
-//   (Madgwick が投擲時の高G ショックから収束する間、サーボを暴れさせない)。
-//   armed 中は failsafe を抑制（地上局接続が無くても飛行可能）。
-bool  armedForLaunch = false;
-bool  launched = false;
-uint32_t launchTimeMs = 0;
-float launchAccelG = 2.5f;                // 投擲判定しきい値 [g]
-const uint32_t LAUNCH_GRACE_MS = 500;     // 投擲後の PID ゼロホールド期間 [ms]
-const uint8_t  LAUNCH_TRIGGER_FRAMES = 2; // 連続超過フレーム数 (~62ms @30Hz)
-uint8_t launchHighGCount = 0;
+// ---- Flight Phase Machine ----
+//   PRELAUNCH → (|a|>launch_g) → LAUNCH → (t>climb_ms) → GLIDE → (|az|<landed_g sustained) → LANDED
+//
+//   フェーズごとに目標 pitch と feed-forward を切り替える:
+//     PRELAUNCH: MANUAL ホールド (trim 維持)、launch_g 監視
+//     LAUNCH    : 最初の launchGraceMs は PID 出力 0（高G ショック復帰猶予）。
+//                 その後 climb_target_pitch (例 +15°) で機首上げ、feed-forward でエレベータ +5°。
+//     GLIDE     : glide_target_pitch (例 +3°、最良滑空角)、feed-forward なし。
+//     LANDED    : MANUAL + trim=0、PID 完全停止。地面で延々サーボを駆動しない。
+//
+//   armed 中 (PHASE_DISARMED 以外) は failsafe を抑制（地上局接続が無くても飛行継続）。
+//   下位互換: `arm` → PRELAUNCH、`disarm` → DISARMED、`launch_g` も従来通り。
+enum FlightPhase {
+  PHASE_DISARMED  = 0,   // arm されていない（地上テスト用、failsafe 有効）
+  PHASE_PRELAUNCH = 1,   // armed、|a| > launch_g を待機（MANUAL ホールド）
+  PHASE_LAUNCH    = 2,   // 投擲検知後 climb_ms まで（climb-out: 機首上げ）
+  PHASE_GLIDE     = 3,   // 滑空（最良滑空 pitch）
+  PHASE_LANDED    = 4,   // 着地検出後（PID 停止、サーボ中立）
+};
+FlightPhase phase = PHASE_DISARMED;
+uint32_t phaseStartMs = 0;
+
+float launchAccelG = 2.5f;                  // 投擲判定しきい値 [g]
+uint32_t climbMs = 1500;                    // LAUNCH 持続時間 [ms]
+uint32_t launchGraceMs = 500;               // LAUNCH 直後の PID ゼロホールド [ms]
+float climbTargetPitch = 15.0f;             // LAUNCH 中の目標 pitch [deg]
+float glideTargetPitch = 3.0f;              // GLIDE 中の目標 pitch [deg]
+float climbElevatorFF = 5.0f;               // LAUNCH 中のエレベータ feed-forward [deg]
+float landedAzG = 0.3f;                     // |az| がこれ未満の状態が続くと着地と判定 [g]
+uint32_t landedHoldMs = 1000;               // 着地判定の累積時間 [ms]
+const uint8_t LAUNCH_TRIGGER_FRAMES = 2;    // 連続超過フレーム数 (~62ms @30Hz)
+
+uint8_t launchHighGCount = 0;               // 連続検出カウンタ
+uint32_t landedAccumMs = 0;                 // 着地条件の累積時間
 
 // PID 出力の物理飽和しきい値 (back-calc anti-windup 用)
 //   ミキシング後の servo angle は ±90° にクリップされるが、I 項の暴走を防ぐため
 //   PID 段階でも u を ±OUTPUT_SAT に近づける。
 //   ※ サーボ機械限界より少し小さくすることで「リザーブ」を確保。
 const float OUTPUT_SAT = 90.0f;
+
+// ---- D 項のソース選択 ----
+//   ERROR : 従来 (e - prevE)/dt + dFilter LPF。Madgwick の積分出力に依存し位相遅れ + ノイズ増幅。
+//   GYRO  : ジャイロ生値 (-gx for roll, -gy for pitch, -gz for yaw) を直接使う。
+//           IMU の角速度がそのまま rate 信号として効く。Lesson17 推奨方式。
+//           Kd の単位は同じ deg/s なので、概ね既存値の 1/2〜同等で動くが、要再チューニング。
+enum DSource { DSRC_GYRO = 0, DSRC_ERROR = 1 };
+DSource dSource = DSRC_GYRO;   // 既定: gyro 直接（CONTROL_STRATEGY_REPORT P0-3 推奨）
 
 // ---- command parser ----
 static char cmdBuf[120];
@@ -222,6 +256,70 @@ static float clipf(float v, float lo, float hi) {
   if (v < lo) return lo;
   if (v > hi) return hi;
   return v;
+}
+
+// =============================================================
+//  Flight phase machine — transition helper
+// =============================================================
+//   フェーズ切替時に必ず通すための一元化された遷移関数。
+//   役割:
+//     - 内部カウンタ (launchHighGCount, landedAccumMs) のリセット
+//     - PID 状態 (integralE, dFilt, prevE) のクリーンスタート
+//     - baseMode / autoSub の自動セット
+//     - tiltSafeguardTriggered の解除
+//     - 進入メッセージの送出
+static void phaseTransition(FlightPhase newPhase) {
+  static const char* PN[] = {"DISARMED", "PRELAUNCH", "LAUNCH", "GLIDE", "LANDED"};
+  if (newPhase == phase) return;  // 自己遷移は無視
+  phase = newPhase;
+  phaseStartMs = millis();
+  launchHighGCount = 0;
+  landedAccumMs = 0;
+
+  // モード/PID 状態をフェーズに合わせて初期化
+  for (int i = 0; i < 3; i++) {
+    integralE[i] = 0.0f;
+    dFilt[i] = 0.0f;
+    prevE[i] = 0.0f;
+  }
+
+  switch (newPhase) {
+    case PHASE_DISARMED:
+    case PHASE_PRELAUNCH:
+      // MANUAL ホールド (PRELAUNCH は LAUNCH 検出まで MANUAL のまま)
+      baseMode = MODE_MANUAL;
+      break;
+    case PHASE_LAUNCH:
+    case PHASE_GLIDE:
+      // 自律 PID 開始 (LAUNCH 直後の grace は別ロジックで PID 出力ゼロホールド)
+      baseMode = MODE_AUTO;
+      autoSub  = SUB_PID;
+      tiltSafeguardTriggered = false;
+      break;
+    case PHASE_LANDED:
+      // 着地: サーボ中立、PID 停止
+      baseMode = MODE_MANUAL;
+      trimDeg[0] = trimDeg[1] = trimDeg[2] = 0.0f;
+      break;
+  }
+
+  char buf[80];
+  snprintf(buf, sizeof(buf), "[PHASE] -> %s", PN[(int)newPhase]);
+  radioPrintln(buf);
+}
+
+// 現在フェーズに応じた目標 pitch を返す（roll/yaw は target[] のまま）
+static float currentTargetPitch() {
+  switch (phase) {
+    case PHASE_LAUNCH: return climbTargetPitch;
+    case PHASE_GLIDE:  return glideTargetPitch;
+    default:           return target[1];  // ユーザ設定値
+  }
+}
+
+// 現在フェーズに応じたエレベータ feed-forward (deg)
+static float currentElevatorFF() {
+  return (phase == PHASE_LAUNCH) ? climbElevatorFF : 0.0f;
 }
 
 // =============================================================
@@ -281,12 +379,16 @@ static void printStatus() {
     attitudeOffsetActive ? "ACTIVE" : "off",
     attitudeOffset[0], attitudeOffset[1], attitudeOffset[2]);
   radioPrintln(buf);
+  static const char* PHASE_NAMES[] = {"DISARMED", "PRELAUNCH", "LAUNCH", "GLIDE", "LANDED"};
   snprintf(buf, sizeof(buf),
-    "[STATUS] arm=%s launched=%s launch_g=%.2f grace_ms=%lu",
-    armedForLaunch ? "ARMED" : "off",
-    launched ? "YES" : "no",
-    launchAccelG,
-    (unsigned long)LAUNCH_GRACE_MS);
+    "[STATUS] phase=%s launch_g=%.2f climb_ms=%lu climb_pitch=%.1f glide_pitch=%.1f",
+    PHASE_NAMES[(int)phase], launchAccelG,
+    (unsigned long)climbMs, climbTargetPitch, glideTargetPitch);
+  radioPrintln(buf);
+  snprintf(buf, sizeof(buf),
+    "[STATUS] climb_ff_elev=%.1f landed_g=%.2f landed_ms=%lu d_source=%s",
+    climbElevatorFF, landedAzG, (unsigned long)landedHoldMs,
+    dSource == DSRC_GYRO ? "GYRO" : "ERROR");
   radioPrintln(buf);
 }
 
@@ -313,10 +415,18 @@ static void printHelp() {
   radioPrintln("[INFO]   dfilter <alpha>    D-term LPF coefficient 0..0.99 (0 = raw, 0.85 default)");
   radioPrintln("[INFO]   zero               capture current attitude as 0deg reference");
   radioPrintln("[INFO]   unzero             clear zero offset (use raw IMU)");
-  radioPrintln("[INFO] Launch detection (autonomous glide):");
-  radioPrintln("[INFO]   arm                arm launch detector (stay MANUAL until thrown)");
-  radioPrintln("[INFO]   disarm             clear armed state");
-  radioPrintln("[INFO]   launch_g <g>       throw-detection accel threshold (default 2.5)");
+  radioPrintln("[INFO] Flight Phase Machine (autonomous glide):");
+  radioPrintln("[INFO]   arm                  PRELAUNCH (wait throw, MANUAL hold)");
+  radioPrintln("[INFO]   disarm               back to DISARMED (cancel flight)");
+  radioPrintln("[INFO]   phase                show current phase only");
+  radioPrintln("[INFO]   launch_g <g>         throw-detect accel threshold (default 2.5)");
+  radioPrintln("[INFO]   climb_ms <ms>        LAUNCH phase duration (default 1500)");
+  radioPrintln("[INFO]   climb_pitch <deg>    LAUNCH target pitch (default +15)");
+  radioPrintln("[INFO]   glide_pitch <deg>    GLIDE target pitch (default +3)");
+  radioPrintln("[INFO]   climb_ff <deg>       LAUNCH elevator feed-forward (default +5)");
+  radioPrintln("[INFO]   landed_g <g>         |az| below this counts as landed (default 0.3)");
+  radioPrintln("[INFO]   landed_ms <ms>       sustained-below time for landed (default 1000)");
+  radioPrintln("[INFO]   d_source <gyro|err>  D-term source: gyro (default) or err (legacy)");
 }
 
 // =============================================================
@@ -480,30 +590,23 @@ static void handleCommandLine(char* line) {
     return;
   }
 
-  // ---- 投擲検知 (autonomous launch) ----
+  // ---- フェーズマシン (autonomous glide) ----
+  //   `arm` → PRELAUNCH、`disarm` → DISARMED。フェーズ遷移は phaseTransition() を通す
+  //   ことで I/D 状態と各種カウンタを一貫してクリアする。
   if (iequals(cmd, "arm")) {
-    armedForLaunch = true;
-    launched = false;
-    launchHighGCount = 0;
-    baseMode = MODE_MANUAL;
-    // PID 状態をクリア（launched=true 移行時にクリーンに開始するため）
-    for (int i = 0; i < 3; i++) {
-      integralE[i] = 0.0f;
-      dFilt[i] = 0.0f;
-      prevE[i] = 0.0f;
-    }
-    char buf[80];
-    snprintf(buf, sizeof(buf),
-      "[ARM] ARMED (waiting throw >%.2fg). Failsafe suppressed while armed.",
-      launchAccelG);
-    radioPrintln(buf);
+    phaseTransition(PHASE_PRELAUNCH);
     return;
   }
   if (iequals(cmd, "disarm")) {
-    armedForLaunch = false;
-    launched = false;
-    launchHighGCount = 0;
-    radioPrintln("[ARM] disarmed");
+    phaseTransition(PHASE_DISARMED);
+    return;
+  }
+  if (iequals(cmd, "phase")) {
+    static const char* PN[] = {"DISARMED","PRELAUNCH","LAUNCH","GLIDE","LANDED"};
+    char buf[64];
+    snprintf(buf, sizeof(buf), "[PHASE] %s (in %lums)",
+      PN[(int)phase], (unsigned long)(millis() - phaseStartMs));
+    radioPrintln(buf);
     return;
   }
   if (iequals(cmd, "launch_g")) {
@@ -516,6 +619,60 @@ static void handleCommandLine(char* line) {
     launchAccelG = v;
     char buf[64];
     snprintf(buf, sizeof(buf), "[PARAM] launch_g=%.2fg", launchAccelG);
+    radioPrintln(buf);
+    return;
+  }
+  // フェーズ毎の挙動チューニング
+  if (iequals(cmd, "climb_ms") || iequals(cmd, "climb_pitch") ||
+      iequals(cmd, "climb_ff") || iequals(cmd, "glide_pitch") ||
+      iequals(cmd, "landed_g") || iequals(cmd, "landed_ms")) {
+    char* arg = nextToken(p);
+    float v;
+    if (!arg || !parseFloat(arg, &v)) {
+      radioPrintln("[INFO] usage: <param> <value>");
+      return;
+    }
+    char buf[80];
+    if (iequals(cmd, "climb_ms")) {
+      if (v < 200 || v > 10000) { radioPrintln("[INFO] climb_ms range 200..10000"); return; }
+      climbMs = (uint32_t)v;
+      snprintf(buf, sizeof(buf), "[PARAM] climb_ms=%lu", (unsigned long)climbMs);
+    } else if (iequals(cmd, "climb_pitch")) {
+      if (v < -45 || v > 60) { radioPrintln("[INFO] climb_pitch range -45..60"); return; }
+      climbTargetPitch = v;
+      snprintf(buf, sizeof(buf), "[PARAM] climb_pitch=%.1f", climbTargetPitch);
+    } else if (iequals(cmd, "climb_ff")) {
+      if (v < -30 || v > 30) { radioPrintln("[INFO] climb_ff range -30..30"); return; }
+      climbElevatorFF = v;
+      snprintf(buf, sizeof(buf), "[PARAM] climb_ff=%.1f", climbElevatorFF);
+    } else if (iequals(cmd, "glide_pitch")) {
+      if (v < -20 || v > 30) { radioPrintln("[INFO] glide_pitch range -20..30"); return; }
+      glideTargetPitch = v;
+      snprintf(buf, sizeof(buf), "[PARAM] glide_pitch=%.1f", glideTargetPitch);
+    } else if (iequals(cmd, "landed_g")) {
+      if (v < 0.0f || v > 1.0f) { radioPrintln("[INFO] landed_g range 0..1"); return; }
+      landedAzG = v;
+      snprintf(buf, sizeof(buf), "[PARAM] landed_g=%.2f", landedAzG);
+    } else { // landed_ms
+      if (v < 100 || v > 10000) { radioPrintln("[INFO] landed_ms range 100..10000"); return; }
+      landedHoldMs = (uint32_t)v;
+      snprintf(buf, sizeof(buf), "[PARAM] landed_ms=%lu", (unsigned long)landedHoldMs);
+    }
+    radioPrintln(buf);
+    return;
+  }
+  // D 項ソース切替
+  if (iequals(cmd, "d_source")) {
+    char* arg = nextToken(p);
+    if (!arg) { radioPrintln("[INFO] usage: d_source <gyro|error>"); return; }
+    if (iequals(arg, "gyro") || iequals(arg, "g")) dSource = DSRC_GYRO;
+    else if (iequals(arg, "error") || iequals(arg, "err") || iequals(arg, "e")) dSource = DSRC_ERROR;
+    else { radioPrintln("[INFO] usage: d_source <gyro|error>"); return; }
+    // ソース切替時は D 状態をクリア
+    for (int i = 0; i < 3; i++) { dFilt[i] = 0.0f; prevE[i] = 0.0f; }
+    char buf[40];
+    snprintf(buf, sizeof(buf), "[PARAM] d_source=%s",
+      dSource == DSRC_GYRO ? "GYRO" : "ERROR");
     radioPrintln(buf);
     return;
   }
@@ -602,6 +759,15 @@ void setup() {
   IMU.writeRegister(LSM6DS3_ACC_GYRO_CTRL8_XL, 0x09);
   filter.begin(MEASURING_FREQ);
 
+  // Madgwick beta tuning (CONTROL_STRATEGY_REPORT P1-2):
+  //   ライブラリ既定 0.1f は 9軸 (magnetometer 込) 想定で大きい。6軸構成では
+  //   論文推奨 0.033 が望ましい (収束を抑えてジャイロ積分に寄せ、加速時の accel
+  //   外乱を持ち込みにくくする)。本機は射出時に accel が騙される条件にあるため特に。
+  //   `MadgwickAHRS` (arduino-libraries) は beta を private で持つため、外部から
+  //   直接設定不能。Adafruit_AHRS への移行 or ライブラリ patch が将来課題。
+  //   暫定で beta を効果的に下げるには、updateIMU を低レート (=lessen integration)
+  //   で呼ぶ手があるが、本機は 30Hz 固定なので適用不可。**TODO**: beta 設定機能。
+
   prevUs = micros();
   // 起動直後は受信履歴ゼロ → 即フェイルセーフ発動を防ぐため初期化
   lastUplinkMs = millis();
@@ -621,10 +787,10 @@ void loop() {
   pollSerialCommands();
 
   // ---- フェイルセーフ判定 ----
-  //   armedForLaunch 中（=自律飛行待機 / 投擲後）は地上局との通信が
-  //   無くても飛行を継続させたいので failsafe をスキップする。
-  //   解除するには `disarm` で armed を解いてから操作。
-  if (!armedForLaunch && failsafeTimeoutMs > 0
+  //   PHASE_DISARMED （= 地上テスト中、つまり通常の地上局運用）でのみ有効。
+  //   PRELAUNCH/LAUNCH/GLIDE/LANDED 中は地上局通信が無くても飛行を継続/着陸させたい
+  //   ので failsafe をスキップする。解除するには `disarm` を打つ。
+  if (phase == PHASE_DISARMED && failsafeTimeoutMs > 0
       && (uint32_t)(millis() - lastUplinkMs) > failsafeTimeoutMs) {
     if (!failsafeActive) {
       failsafeActive = true;
@@ -657,33 +823,46 @@ void loop() {
   Q[1] = filter.getPitch();
   Q[2] = filter.getYaw();
 
-  // ---- 投擲検知 (launch detection) ----
-  //   armed 中に |a| が連続でしきい値を超えたら launched=true、AUTO/PID へ自動遷移。
-  //   1フレームのノイズで誤発火しないよう LAUNCH_TRIGGER_FRAMES 連続検出が条件。
-  if (armedForLaunch && !launched) {
-    float aMag = sqrtf(ax*ax + ay*ay + az*az);
-    if (aMag > launchAccelG) {
-      if (++launchHighGCount >= LAUNCH_TRIGGER_FRAMES) {
-        launched = true;
-        launchTimeMs = millis();
-        baseMode = MODE_AUTO;
-        autoSub  = SUB_PID;
-        tiltSafeguardTriggered = false;
-        // I/D 状態をクリア（launched 開始時に綺麗な状態で）
-        for (int i = 0; i < 3; i++) {
-          integralE[i] = 0.0f;
-          dFilt[i] = 0.0f;
-          prevE[i] = target[i] - Q[i];
+  // ---- フェーズマシン step ----
+  //   PRELAUNCH → LAUNCH → GLIDE → LANDED の遷移を判定する。
+  //   遷移はすべて phaseTransition() 経由なので、I/D 状態のクリアと
+  //   モード設定が一貫して走る。
+  float aMag = sqrtf(ax*ax + ay*ay + az*az);
+  switch (phase) {
+    case PHASE_PRELAUNCH: {
+      // |a| > launch_g を LAUNCH_TRIGGER_FRAMES 連続で検出 → LAUNCH へ
+      if (aMag > launchAccelG) {
+        if (++launchHighGCount >= LAUNCH_TRIGGER_FRAMES) {
+          char buf[64];
+          snprintf(buf, sizeof(buf), "[LAUNCH] detected |a|=%.2fg", aMag);
+          radioPrintln(buf);
+          phaseTransition(PHASE_LAUNCH);
         }
-        char buf[96];
-        snprintf(buf, sizeof(buf),
-          "[LAUNCH] detected |a|=%.2fg -> AUTO/PID (grace %lums)",
-          aMag, (unsigned long)LAUNCH_GRACE_MS);
-        radioPrintln(buf);
+      } else {
+        launchHighGCount = 0;
       }
-    } else {
-      launchHighGCount = 0;
-    }
+    } break;
+    case PHASE_LAUNCH: {
+      // climb_ms 経過で GLIDE へ
+      if ((uint32_t)(millis() - phaseStartMs) >= climbMs) {
+        phaseTransition(PHASE_GLIDE);
+      }
+    } break;
+    case PHASE_GLIDE: {
+      // |az| < landed_g が landed_ms 累積で LANDED へ
+      // (重力が消えた = 落下中 ではなく、機体が地面に置かれて自由落下しない状態を狙う)
+      if (fabsf(az) < landedAzG) {
+        landedAccumMs += dt_ms;
+        if (landedAccumMs >= landedHoldMs) {
+          phaseTransition(PHASE_LANDED);
+        }
+      } else {
+        landedAccumMs = 0;
+      }
+    } break;
+    default:
+      // DISARMED / LANDED は遷移なし（手動で disarm/arm 操作するまで）
+      break;
   }
 
   // ---- attitude zero offset 補正 ----
@@ -744,18 +923,25 @@ void loop() {
   }
 
   // ---- 投擲後 grace 期間判定 ----
-  //   launched 直後の LAUNCH_GRACE_MS は PID 出力をゼロホールド (= MANUAL 相当)。
+  //   LAUNCH 突入直後の launchGraceMs は PID 出力をゼロホールド (= MANUAL 相当)。
   //   投擲時の高G/高レート転位で Madgwick が一時的にズレるため、姿勢推定が
   //   安定するまで舵を打たない方が安全。grace 経過後に PID 制御を開始。
-  bool inLaunchGrace = launched
-      && (uint32_t)(millis() - launchTimeMs) < LAUNCH_GRACE_MS;
+  bool inLaunchGrace = (phase == PHASE_LAUNCH)
+      && (uint32_t)(millis() - phaseStartMs) < launchGraceMs;
+
+  // フェーズに応じた実効目標角を作る (pitch のみ動的化)
+  float effectiveTarget[3] = { target[0], currentTargetPitch(), target[2] };
+
+  // 角速度ベクトル (deg/s)。gyro 直接 D 項 (d_source GYRO) で使う。
+  // ※ 取付方向によって符号が変わる可能性あり (今は LSM6DS3 標準: gx=roll rate)
+  float gyroRate[3] = { gx, gy, gz };
 
   // 3軸 PID 計算（roll=0, pitch=1, yaw=2）。yaw は K=0 既定で実質ゼロ。
   // back-calculation anti-windup: u を OUTPUT_SAT で飽和させ、飽和分だけ
   // I 項を巻き戻して暴走を防ぐ。Ki=0 のときは無効化。
   float u[3] = {0.0f, 0.0f, 0.0f};
   for (int i = 0; i < 3; i++) {
-    float e = target[i] - Q[i];
+    float e = effectiveTarget[i] - Q[i];
 
     if (baseMode == MODE_AUTO && autoSub == SUB_PID) {
       integralE[i] += e * dt;
@@ -764,13 +950,20 @@ void loop() {
       integralE[i] = 0.0f;
     }
 
+    // ---- D 項計算 ----
+    //   d_source = GYRO  : de = -gyroRate[i] （角速度の逆符号、Lesson17 流）
+    //   d_source = ERROR : de = LPF((e - prevE)/dt) （従来方式、dfilter で平滑）
     float de = 0.0f;
     if (baseMode == MODE_AUTO && (autoSub == SUB_PD || autoSub == SUB_PID)) {
-      float deRaw = (e - prevE[i]) / dt;
-      // 1次 IIR LPF: dFilt = α·dFilt + (1-α)·deRaw
-      // α=0 で従来通り (生 D), α が大きいほど滑らか。
-      dFilt[i] = dFilterAlpha * dFilt[i] + (1.0f - dFilterAlpha) * deRaw;
-      de = dFilt[i];
+      if (dSource == DSRC_GYRO) {
+        // 角速度は (dQ/dt) なので de = -dQ/dt。ジャイロから直接読む = 位相遅れ最小。
+        de = -gyroRate[i];
+        dFilt[i] = de;  // 表示用にコピー
+      } else {
+        float deRaw = (e - prevE[i]) / dt;
+        dFilt[i] = dFilterAlpha * dFilt[i] + (1.0f - dFilterAlpha) * deRaw;
+        de = dFilt[i];
+      }
     }
     prevE[i] = e;
 
@@ -795,10 +988,12 @@ void loop() {
 
   // ---- サーボミキシング ----
   //   u_roll  -> 右エルロン D0 (+方向)、左エルロン D1 (反転)
-  //   u_pitch -> エレベータ D2
+  //   u_pitch -> エレベータ D2 (+ feed-forward オフセット)
   //   u_yaw   -> 未使用
+  //   feed-forward: LAUNCH 中は機首上げを補助するため、PID 出力に climb_ff を加算。
+  //                 inLaunchGrace 中は u[1]=0 だが FF は適用 → 高G中もエレベータが上げ位置を保つ。
   float u_roll  = u[0];
-  float u_pitch = u[1];
+  float u_pitch = u[1] + currentElevatorFF();
 
   float angle_R = trimDeg[0] + aileronMixR * u_roll;             // D0 right aileron
   float angle_L = trimDeg[1] + aileronMixL * u_roll;             // D1 left  aileron
@@ -828,17 +1023,21 @@ void loop() {
     }
   }
 
-  // telemetry (15-field CSV, viewer compatible)
+  // telemetry (17-field CSV)
+  //   後方互換: 前 15 列は従来通り。末尾に phase (int 0..4) と accel_g (|a|) を追加。
+  //   旧 viewer (15 列固定パーサ) では 17 列で reject されるため、付属の
+  //   Python/WebUI パーサを下位互換 (受け取り側で >=15 を許容) に更新済み。
   if (telemetryOn) {
     uint32_t t_ms = millis();
     char buf[256];
     snprintf(buf, sizeof(buf),
-      "%lu,%lu,%lu,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d",
+      "%lu,%lu,%lu,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%.3f",
       (unsigned long)srcSeq, (unsigned long)t_ms, (unsigned long)dt_ms,
       ax, ay, az,
       gx, gy, gz,
       Q[0], Q[1], Q[2],
-      servoAngle[0], servoAngle[1], servoAngle[2]);
+      servoAngle[0], servoAngle[1], servoAngle[2],
+      (int)phase, aMag);
     radioPrintln(buf);
   }
 
