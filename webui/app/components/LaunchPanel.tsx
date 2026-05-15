@@ -78,6 +78,10 @@ export function LaunchPanel({
   const [applied, setApplied] = useState<StoredParams>(DEFAULTS);
   const [busy, setBusy] = useState(false);
 
+  // 現在の phase を state で持つ (ボタン disable 判定用、再レンダが必要)。
+  // RAF 内で phase 変化時のみ setState する。
+  const [currentPhase, setCurrentPhase] = useState<number>(0);
+
   // ライブ表示の RAF refs
   const phaseLabelRef = useRef<HTMLSpanElement>(null);
   const phaseDescRef = useRef<HTMLDivElement>(null);
@@ -194,10 +198,11 @@ export function LaunchPanel({
           }
         }
 
-        // フェーズ遷移時刻のトラッキング
+        // フェーズ遷移時刻のトラッキング (state も合わせて更新 → ボタン disable 再評価)
         if (phase !== lastPhaseRef.current) {
           lastPhaseRef.current = phase;
           lastPhaseAtRef.current = Date.now();
+          setCurrentPhase(phase);
         }
         if (phaseAgeRef.current) {
           const dt = Date.now() - lastPhaseAtRef.current;
@@ -406,36 +411,64 @@ export function LaunchPanel({
         {PHASE_DESC[0]}
       </div>
 
-      {/* Arm / Land / Disarm */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <button
-          onClick={doArm}
-          disabled={!enabled || busy}
-          className="btn-primary text-base px-5 py-2.5 font-bold"
-          title="PRELAUNCH に遷移、投擲待機開始"
-        >
-          {busy ? "..." : "🚀 Arm"}
-        </button>
-        <button
-          onClick={doLand}
-          disabled={!enabled || busy}
-          className="btn-ghost text-base px-5 py-2.5 font-bold !border-glider-pitch/40 !text-glider-pitch hover:!bg-glider-pitch/10"
-          title="強制 LANDED 遷移（GLIDE で自動検出が起きないとき / 安全停止）"
-        >
-          🛬 Land
-        </button>
-        <button
-          onClick={doDisarm}
-          disabled={!enabled || busy}
-          className="btn-danger text-base px-5 py-2.5 font-bold"
-          title="DISARMED に戻す（地上テスト用 / 着地後の復帰）"
-        >
-          ■ Disarm
-        </button>
-        <div className="text-[11px] text-glider-textDim leading-tight">
-          Step 1〜4 完了後 → Arm → 投擲。詰まったら Land → Disarm。
-        </div>
-      </div>
+      {/* Arm / Land / Disarm — フェーズ依存で disable して誤操作を防止 */}
+      {(() => {
+        // Arm: DISARMED または LANDED からのみ。飛行中 / WT 中は禁止 (現在の飛行をリセットする事故防止)
+        const armEnabled = enabled && !busy && (currentPhase === 0 || currentPhase === 4);
+        // Land: LAUNCH または GLIDE のみ。それ以外では意味がない
+        const landEnabled = enabled && !busy && (currentPhase === 2 || currentPhase === 3);
+        // Disarm: DISARMED 以外 (常に安全脱出として使える)
+        const disarmEnabled = enabled && !busy && currentPhase !== 0;
+
+        const armTitle =
+          currentPhase === 1 ? "すでに PRELAUNCH (Arm 済み)"
+          : currentPhase === 2 ? "LAUNCH 中 (再 Arm は飛行リセットになるため禁止)"
+          : currentPhase === 3 ? "GLIDE 中 (再 Arm は飛行リセットになるため禁止)"
+          : currentPhase === 5 ? "WINDTUNNEL 中 (先に Exit してから)"
+          : "PRELAUNCH へ遷移し、投擲を待機する";
+        const landTitle =
+          currentPhase === 0 || currentPhase === 4
+            ? "LAUNCH / GLIDE 中のみ使えます"
+          : currentPhase === 1 ? "PRELAUNCH では Disarm を使ってください"
+          : currentPhase === 5 ? "WINDTUNNEL では Disarm / Exit を使ってください"
+          : "強制 LANDED 遷移（手動着地、安全停止）";
+        const disarmTitle =
+          currentPhase === 0
+            ? "すでに DISARMED 状態です"
+            : "DISARMED に戻す（地上テスト用 / 着地後 / 緊急脱出）";
+
+        return (
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={doArm}
+              disabled={!armEnabled}
+              className="btn-primary text-base px-5 py-2.5 font-semibold"
+              title={armTitle}
+            >
+              {busy ? "..." : "🚀 Arm"}
+            </button>
+            <button
+              onClick={doLand}
+              disabled={!landEnabled}
+              className="btn text-base px-5 py-2.5 font-semibold bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-slate-300 disabled:text-slate-500"
+              title={landTitle}
+            >
+              🛬 Land
+            </button>
+            <button
+              onClick={doDisarm}
+              disabled={!disarmEnabled}
+              className="btn-danger text-base px-5 py-2.5 font-semibold"
+              title={disarmTitle}
+            >
+              ■ Disarm
+            </button>
+            <div className="text-xs text-slate-500 leading-tight">
+              Step 1〜4 完了後 → Arm → 投擲。着地は手動で Land → Disarm。
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ライブ |a| 表示 */}
       <div className="space-y-1 pt-1">

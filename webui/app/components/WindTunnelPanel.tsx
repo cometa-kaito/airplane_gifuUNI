@@ -50,6 +50,11 @@ export function WindTunnelPanel({
   const [appliedRoll, setAppliedRoll] = useState<number>(DEFAULT_ROLL);
   const [busy, setBusy] = useState(false);
 
+  // 現在の phase を state でも保持 (ボタン disable 判定に使う、再レンダが必要)
+  // RAF 内では phase 変化時のみ setState する設計で、毎フレーム再レンダを避ける。
+  const [currentPhase, setCurrentPhase] = useState<number>(0);
+  const lastPhaseSeenRef = useRef<number>(-1);
+
   // ライブ値の RAF refs
   const phaseRef = useRef<HTMLSpanElement>(null);
   const rollRef = useRef<HTMLSpanElement>(null);
@@ -94,6 +99,11 @@ export function WindTunnelPanel({
           phaseRef.current.textContent = phaseName;
           phaseRef.current.style.color =
             phaseIdx === 5 ? "#7c3aed" : "#64748b";  // violet-600 / slate-500
+        }
+        // phase が変わったら state を更新してボタン disable を再評価させる
+        if (phaseIdx !== lastPhaseSeenRef.current) {
+          lastPhaseSeenRef.current = phaseIdx;
+          setCurrentPhase(phaseIdx);
         }
         if (rollRef.current) {
           rollRef.current.textContent =
@@ -229,28 +239,47 @@ export function WindTunnelPanel({
         </div>
       </div>
 
-      {/* Enter / Exit */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <button
-          onClick={enterWT}
-          disabled={!enabled || busy}
-          className="btn text-base px-5 py-2.5 font-semibold bg-violet-600 text-white shadow-sm hover:bg-violet-700 active:bg-violet-800"
-          title="風洞試験モードへ遷移（PID 起動）"
-        >
-          {busy ? "..." : "🌬 Enter Wind Tunnel"}
-        </button>
-        <button
-          onClick={exitWT}
-          disabled={!enabled || busy}
-          className="btn-danger text-base px-5 py-2.5 font-bold"
-          title="DISARMED に戻る（PID 停止、target は維持）"
-        >
-          ■ Exit (Disarm)
-        </button>
-        <div className="text-[11px] text-glider-textDim leading-tight">
-          機体固定 → Zero → PID 設定 → Enter → target スイープ
-        </div>
-      </div>
+      {/* Enter / Exit (フェーズに応じて disable: WT 中は Enter 無効、DISARMED 中は Exit 無効) */}
+      {(() => {
+        const inWT = currentPhase === 5;
+        const inActiveFlight =
+          currentPhase === 1 || currentPhase === 2 || currentPhase === 3;
+        // Enter: WT 中 or 飛行中は無効
+        const enterDisabled = !enabled || busy || inWT || inActiveFlight;
+        const enterTitle = inWT
+          ? "すでに WINDTUNNEL モードです"
+          : inActiveFlight
+            ? "飛行中は使えません (先に Disarm)"
+            : "風洞試験モードへ遷移（PID 起動）";
+        // Exit: WT 中のみ有効 (DISARMED / 飛行中は無効)
+        const exitDisabled = !enabled || busy || !inWT;
+        const exitTitle = inWT
+          ? "DISARMED に戻る（PID 停止、target は維持）"
+          : "WINDTUNNEL 中のみ使えます";
+        return (
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={enterWT}
+              disabled={enterDisabled}
+              className="btn text-base px-5 py-2.5 font-semibold bg-violet-600 text-white shadow-sm hover:bg-violet-700 active:bg-violet-800"
+              title={enterTitle}
+            >
+              {busy ? "..." : "🌬 Enter Wind Tunnel"}
+            </button>
+            <button
+              onClick={exitWT}
+              disabled={exitDisabled}
+              className="btn-danger text-base px-5 py-2.5 font-bold"
+              title={exitTitle}
+            >
+              ■ Exit (Disarm)
+            </button>
+            <div className="text-[11px] text-slate-500 leading-tight">
+              機体固定 → Zero → PID 設定 → Enter → target スイープ
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ライブ姿勢 / target / 偏差 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-glider-surface border border-glider-border rounded-md px-3 py-2.5">

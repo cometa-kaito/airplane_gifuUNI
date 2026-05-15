@@ -895,40 +895,46 @@ class MainWindow(QtWidgets.QMainWindow):
         # ---- 投擲検知 (Launch / autonomous glide) ----
         #   Arm: MANUAL ホールド + 投擲待機。|a|>launch_g 連続検出 → AUTO/PID 自動遷移。
         #   armed 中は failsafe 抑制（地上局接続不要で飛行可能）。
+        #   各ボタンの enabled 状態は phase に応じて _update_phase_buttons() で更新する
         row += 1
         ctl_layout.addWidget(QtWidgets.QLabel("Launch:"), row, 0)
-        btn_arm = QtWidgets.QPushButton("🚀 Arm")
-        btn_arm.setMinimumWidth(60)
-        btn_arm.setToolTip("投擲待機モード開始（機体は MANUAL のまま待機）")
-        btn_arm.clicked.connect(lambda: self.serial_io.send_command("arm"))
-        ctl_layout.addWidget(btn_arm, row, 1)
+        self.btn_arm = QtWidgets.QPushButton("🚀 Arm")
+        self.btn_arm.setMinimumWidth(60)
+        self.btn_arm.setToolTip("投擲待機モード開始（DISARMED または LANDED からのみ）")
+        self.btn_arm.clicked.connect(lambda: self.serial_io.send_command("arm"))
+        ctl_layout.addWidget(self.btn_arm, row, 1)
 
-        btn_land = QtWidgets.QPushButton("🛬 Land")
-        btn_land.setMinimumWidth(60)
-        btn_land.setToolTip("強制 LANDED 遷移（GLIDE で詰まった時 / 安全停止）")
-        btn_land.clicked.connect(lambda: self.serial_io.send_command("land"))
-        ctl_layout.addWidget(btn_land, row, 2)
+        self.btn_land = QtWidgets.QPushButton("🛬 Land")
+        self.btn_land.setMinimumWidth(60)
+        self.btn_land.setToolTip("強制 LANDED 遷移（LAUNCH / GLIDE 中のみ有効）")
+        self.btn_land.clicked.connect(lambda: self.serial_io.send_command("land"))
+        ctl_layout.addWidget(self.btn_land, row, 2)
 
-        btn_disarm = QtWidgets.QPushButton("Disarm")
-        btn_disarm.setMinimumWidth(60)
-        btn_disarm.setToolTip("武装解除（地上テスト用 / LANDED からの復帰）")
-        btn_disarm.clicked.connect(lambda: self.serial_io.send_command("disarm"))
-        ctl_layout.addWidget(btn_disarm, row, 3)
+        self.btn_disarm = QtWidgets.QPushButton("Disarm")
+        self.btn_disarm.setMinimumWidth(60)
+        self.btn_disarm.setToolTip("武装解除（DISARMED 以外の状態から）")
+        self.btn_disarm.clicked.connect(lambda: self.serial_io.send_command("disarm"))
+        ctl_layout.addWidget(self.btn_disarm, row, 3)
 
         # 風洞試験モード: PHASE_WINDTUNNEL へ遷移。PID 常時 ON、safeguards 抑制。
-        btn_wt = QtWidgets.QPushButton("🌬 Wind Tunnel")
-        btn_wt.setMinimumWidth(110)
-        btn_wt.setToolTip(
-            "風洞試験モード（PID 常時 ON、tilt safeguard / failsafe 抑制）。"
-            "target_pitch/roll を手動操作して応答測定する用。"
+        self.btn_wt = QtWidgets.QPushButton("🌬 Wind Tunnel")
+        self.btn_wt.setMinimumWidth(110)
+        self.btn_wt.setToolTip(
+            "風洞試験モードへ遷移（DISARMED / LANDED からのみ）。"
+            "PID 常時 ON、tilt safeguard / failsafe 抑制。"
         )
-        btn_wt.setStyleSheet(
+        self.btn_wt.setStyleSheet(
             "QPushButton { background: #5b21b6; color: #f0f0f0; "
             "border-radius: 4px; font-weight: bold; padding: 4px 8px; } "
-            "QPushButton:hover { background: #7c3aed; }"
+            "QPushButton:hover:!disabled { background: #7c3aed; } "
+            "QPushButton:disabled { background: #aaaaaa; color: #e0e0e0; }"
         )
-        btn_wt.clicked.connect(lambda: self.serial_io.send_command("wt"))
-        ctl_layout.addWidget(btn_wt, row, 4)
+        self.btn_wt.clicked.connect(lambda: self.serial_io.send_command("wt"))
+        ctl_layout.addWidget(self.btn_wt, row, 4)
+
+        # 初期状態: DISARMED 想定で各ボタンの enabled を設定
+        self._last_phase_idx = -1
+        self._update_phase_buttons(0)
 
         ctl_layout.addWidget(QtWidgets.QLabel("launch_g:"), row, 5)
         self.spin_launch_g = QtWidgets.QDoubleSpinBox()
@@ -1091,6 +1097,33 @@ class MainWindow(QtWidgets.QMainWindow):
             f"Aileron R: {s0:+d}°   L: {s1:+d}°   Elevator: {s2:+d}°"
         )
 
+    def _update_phase_buttons(self, phase_idx: int):
+        """フェーズ依存のボタン enabled 状態を再計算する。
+        phase_idx: 0=DISARMED, 1=PRELAUNCH, 2=LAUNCH, 3=GLIDE, 4=LANDED, 5=WINDTUNNEL
+
+        ルール:
+          - Arm: DISARMED / LANDED のみ (飛行中の再 Arm は事故になるため禁止)
+          - Land: LAUNCH / GLIDE のみ (それ以外では意味がない)
+          - Disarm: DISARMED 以外 (常に安全脱出として使える)
+          - Wind Tunnel: DISARMED / LANDED のみ (飛行中・WT 中は禁止)
+        """
+        is_disarmed = phase_idx == 0
+        is_landed   = phase_idx == 4
+        is_wt       = phase_idx == 5
+        in_flight   = phase_idx in (1, 2, 3)  # PRELAUNCH / LAUNCH / GLIDE
+        ready_for_new_flight = is_disarmed or is_landed
+
+        if hasattr(self, "btn_arm"):
+            self.btn_arm.setEnabled(ready_for_new_flight)
+        if hasattr(self, "btn_land"):
+            # LAUNCH (2) または GLIDE (3) のみ
+            self.btn_land.setEnabled(phase_idx in (2, 3))
+        if hasattr(self, "btn_disarm"):
+            self.btn_disarm.setEnabled(not is_disarmed)
+        if hasattr(self, "btn_wt"):
+            # WT 中は再投入無意味、飛行中は禁止
+            self.btn_wt.setEnabled(ready_for_new_flight)
+
     # ---------- データ更新 ----------
     @QtCore.pyqtSlot(dict)
     def on_telemetry(self, rec: dict):
@@ -1112,8 +1145,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.big_s2.setText(f"{rec['s2']:>3d}°")
 
         # フェーズ表示 (firmware 17 列対応分)
+        ph_idx_raw = int(rec.get("phase", 0))
+        # フェーズが変わった瞬間にボタンの enabled 状態を更新する
+        # (毎フレーム setEnabled 呼ぶのは無駄なのでガード)
+        if ph_idx_raw != self._last_phase_idx:
+            self._last_phase_idx = ph_idx_raw
+            self._update_phase_buttons(ph_idx_raw)
         if hasattr(self, "big_phase"):
-            ph_idx = int(rec.get("phase", 0))
+            ph_idx = ph_idx_raw
             ph_name = PHASE_NAMES[ph_idx] if 0 <= ph_idx < len(PHASE_NAMES) else f"?{ph_idx}"
             # フェーズに応じた色
             ph_color = {
