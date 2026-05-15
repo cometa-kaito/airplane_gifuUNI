@@ -102,6 +102,14 @@ const float integralLimit = 200.0f;
 float dFilterAlpha = 0.7f;
 float dFilt[3] = {0.0f, 0.0f, 0.0f};
 
+// ---- attitude zero offset (取付角キャリブレーション) ----
+//   機体に IMU を取り付けた際、機体水平 ≠ IMU 水平 になることが多い。
+//   `zero` コマンドで現在の生 Madgwick 出力を「0°」基準として記録し、
+//   以降の Q[] からこのオフセットを差し引いて PID / safeguard /
+//   テレメトリに渡す。`unzero` で解除。RAM のみ保持 (再起動でクリア)。
+float attitudeOffset[3] = {0.0f, 0.0f, 0.0f};   // [roll, pitch, yaw]
+bool  attitudeOffsetActive = false;
+
 // ---- telemetry ----
 uint32_t srcSeq = 0;
 uint32_t prevUs = 0;
@@ -231,6 +239,11 @@ static void printStatus() {
     "[STATUS] safe_angle=%.1fdeg tripped=%s dfilter=%.3f",
     tiltSafeguardDeg, tiltSafeguardTriggered ? "YES" : "no", dFilterAlpha);
   radioPrintln(buf);
+  snprintf(buf, sizeof(buf),
+    "[STATUS] zero=%s offset=[%.2f,%.2f,%.2f]",
+    attitudeOffsetActive ? "ACTIVE" : "off",
+    attitudeOffset[0], attitudeOffset[1], attitudeOffset[2]);
+  radioPrintln(buf);
 }
 
 static void printHelp() {
@@ -254,6 +267,8 @@ static void printHelp() {
   radioPrintln("[INFO]   failsafe <ms>      uplink-loss timeout (0 = disabled)");
   radioPrintln("[INFO]   safe_angle <deg>   tilt-safeguard threshold (0 or >=180 = disabled)");
   radioPrintln("[INFO]   dfilter <alpha>    D-term LPF coefficient 0..0.99 (0 = raw, 0.7 default)");
+  radioPrintln("[INFO]   zero               capture current attitude as 0deg reference");
+  radioPrintln("[INFO]   unzero             clear zero offset (use raw IMU)");
 }
 
 // =============================================================
@@ -361,6 +376,42 @@ static void handleCommandLine(char* line) {
     char buf[64];
     snprintf(buf, sizeof(buf), "[PARAM] failsafe=%lums", (unsigned long)failsafeTimeoutMs);
     radioPrintln(buf);
+    return;
+  }
+
+  // 姿勢角ゼロ点キャリブレーション
+  if (iequals(cmd, "zero")) {
+    // 生 Madgwick 出力を取り直してオフセットに保存
+    // (Q[] は補正後の値を持っているので、フィルタから読み直す)
+    float r = filter.getRoll();
+    float p = filter.getPitch();
+    float y = filter.getYaw();
+    attitudeOffset[0] = r;
+    attitudeOffset[1] = p;
+    attitudeOffset[2] = y;
+    attitudeOffsetActive = true;
+    // 補正適用で過去の I/D 状態は無効になるのでクリア (急な指令変化を防ぐ)
+    for (int i = 0; i < 3; i++) {
+      integralE[i] = 0.0f;
+      dFilt[i] = 0.0f;
+      prevE[i] = 0.0f;
+    }
+    char buf[96];
+    snprintf(buf, sizeof(buf),
+      "[PARAM] zero set: roll=%.2f pitch=%.2f yaw=%.2f", r, p, y);
+    radioPrintln(buf);
+    return;
+  }
+
+  if (iequals(cmd, "unzero")) {
+    attitudeOffset[0] = attitudeOffset[1] = attitudeOffset[2] = 0.0f;
+    attitudeOffsetActive = false;
+    for (int i = 0; i < 3; i++) {
+      integralE[i] = 0.0f;
+      dFilt[i] = 0.0f;
+      prevE[i] = 0.0f;
+    }
+    radioPrintln("[PARAM] zero cleared");
     return;
   }
 
@@ -509,6 +560,25 @@ void loop() {
   Q[0] = filter.getRoll();
   Q[1] = filter.getPitch();
   Q[2] = filter.getYaw();
+
+  // ---- attitude zero offset 補正 ----
+  //   `zero` コマンドで保存した取付角オフセットを差し引く。
+  //   roll/yaw は ±180 へ、pitch は ±90 へ正規化。
+  //   この補正後の Q[] が safeguard / PID / テレメトリ すべてに使われる。
+  if (attitudeOffsetActive) {
+    for (int i = 0; i < 3; i++) {
+      Q[i] -= attitudeOffset[i];
+    }
+    // roll, yaw: -180..+180 wrap
+    for (int i = 0; i < 3; i += 2) {
+      if (Q[i] >  180.0f) Q[i] -= 360.0f;
+      if (Q[i] < -180.0f) Q[i] += 360.0f;
+    }
+    // pitch: clamp to -90..+90 (本来 Madgwick の pitch も同範囲。
+    // 差分で 90 を超えた場合は ±90 でクランプして発散を防ぐ)
+    if (Q[1] >  90.0f) Q[1] =  90.0f;
+    if (Q[1] < -90.0f) Q[1] = -90.0f;
+  }
 
   // ---- attitude safeguard 判定 ----
   //   AUTO 中に |roll| または |pitch| がしきい値を超えたら強制 MANUAL + trim=0。

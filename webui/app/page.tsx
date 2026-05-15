@@ -20,6 +20,7 @@ import { RecorderPanel } from "./components/RecorderPanel";
 import { QuickControl } from "./components/QuickControl";
 import { GainPanel } from "./components/GainPanel";
 import { SafetyPanel } from "./components/SafetyPanel";
+import { CalibrationPanel } from "./components/CalibrationPanel";
 import type { TelemetryFrame } from "./hooks/useTelemetry";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8765";
@@ -163,6 +164,13 @@ export default function Page() {
 
         {/* SECONDARY TELEMETRY (IMU & system) */}
         <TelemetryPanel attitudeRef={attitudeRef} />
+
+        {/* CALIBRATION · 取付角ゼロ点 (zero / unzero) */}
+        <CalibrationPanel
+          attitudeRef={attitudeRef}
+          onSend={sendCommand}
+          enabled={status === "open"}
+        />
 
         {/* SAFETY · 姿勢角しきい値 + Failsafe (auto -> manual triggers) */}
         <SafetyPanel
