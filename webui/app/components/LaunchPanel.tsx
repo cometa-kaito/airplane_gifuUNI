@@ -26,8 +26,10 @@ type StoredParams = {
   climb_pitch: number;
   climb_ff: number;
   glide_pitch: number;
-  landed_g: number;
+  landed_g: number;        // ||a|-1g| 許容偏差 (旧: |az|<th。意味が変わった点に注意)
+  landed_gyro: number;     // 角速度しきい値 [deg/s]
   landed_ms: number;
+  glide_timeout: number;   // GLIDE 強制 LANDED タイムアウト [ms]、0 で無効
 };
 
 const DEFAULTS: StoredParams = {
@@ -36,8 +38,10 @@ const DEFAULTS: StoredParams = {
   climb_pitch: 15,
   climb_ff: 5,
   glide_pitch: 3,
-  landed_g: 0.3,
+  landed_g: 0.15,           // 新セマンティクスでの既定（旧 0.3 を更新）
+  landed_gyro: 5,
   landed_ms: 1000,
+  glide_timeout: 20000,
 };
 
 const STORAGE_KEY = "glider-webui:phase_params";
@@ -131,7 +135,9 @@ export function LaunchPanel({
         await onSend(`climb_ff ${applied.climb_ff.toFixed(1)}`); await sleep(15);
         await onSend(`glide_pitch ${applied.glide_pitch.toFixed(1)}`); await sleep(15);
         await onSend(`landed_g ${applied.landed_g.toFixed(2)}`); await sleep(15);
-        await onSend(`landed_ms ${Math.round(applied.landed_ms)}`);
+        await onSend(`landed_gyro ${applied.landed_gyro.toFixed(1)}`); await sleep(15);
+        await onSend(`landed_ms ${Math.round(applied.landed_ms)}`); await sleep(15);
+        await onSend(`glide_timeout ${Math.round(applied.glide_timeout)}`);
       } catch {
         autoSyncedRef.current = false;
       }
@@ -275,6 +281,17 @@ export function LaunchPanel({
     }
   }, [enabled, busy, onSend]);
 
+  // 強制 LANDED 遷移（GLIDE で自動検出が起こらない場合のエスケープ）
+  const doLand = useCallback(async () => {
+    if (!enabled || busy) return;
+    setBusy(true);
+    try {
+      await onSend("land");
+    } finally {
+      setBusy(false);
+    }
+  }, [enabled, busy, onSend]);
+
   // 数値スピナー UI 部品
   const numInput = (
     key: keyof StoredParams,
@@ -398,7 +415,7 @@ export function LaunchPanel({
         {PHASE_DESC[0]}
       </div>
 
-      {/* Arm / Disarm */}
+      {/* Arm / Land / Disarm */}
       <div className="flex items-center gap-3 flex-wrap">
         <button
           onClick={doArm}
@@ -409,6 +426,14 @@ export function LaunchPanel({
           {busy ? "..." : "🚀 Arm"}
         </button>
         <button
+          onClick={doLand}
+          disabled={!enabled || busy}
+          className="btn-ghost text-base px-5 py-2.5 font-bold !border-glider-pitch/40 !text-glider-pitch hover:!bg-glider-pitch/10"
+          title="強制 LANDED 遷移（GLIDE で自動検出が起きないとき / 安全停止）"
+        >
+          🛬 Land
+        </button>
+        <button
           onClick={doDisarm}
           disabled={!enabled || busy}
           className="btn-danger text-base px-5 py-2.5 font-bold"
@@ -417,7 +442,7 @@ export function LaunchPanel({
           ■ Disarm
         </button>
         <div className="text-[11px] text-glider-textDim leading-tight">
-          Step 1〜4 完了後、機体を構えてから Arm → 投擲。回収後 Disarm。
+          Step 1〜4 完了後 → Arm → 投擲。詰まったら Land → Disarm。
         </div>
       </div>
 
@@ -490,8 +515,14 @@ export function LaunchPanel({
           {numInput("climb_pitch", "climb_pitch", "deg", "climb_pitch", -45, 60, 1, 1, "上昇目標角")}
           {numInput("climb_ff", "climb_ff", "deg", "climb_ff", -30, 30, 1, 1, "エレベータ FF")}
           {numInput("glide_pitch", "glide_pitch", "deg", "glide_pitch", -20, 30, 0.5, 1, "滑空目標角")}
-          {numInput("landed_g", "landed_g", "g", "landed_g", 0.05, 1.0, 0.05, 2, "着地 |az| しきい値")}
-          {numInput("landed_ms", "landed_ms", "ms", "landed_ms", 100, 10000, 100, 0, "着地累積時間")}
+          {numInput("landed_g", "landed_g", "g", "landed_g", 0.05, 1.0, 0.05, 2, "||a|-1g| 偏差")}
+          {numInput("landed_gyro", "landed_gyro", "°/s", "landed_gyro", 0.5, 50, 0.5, 1, "停止判定 max|gyro|")}
+          {numInput("landed_ms", "landed_ms", "ms", "landed_ms", 100, 10000, 100, 0, "両条件 累積時間")}
+          {numInput("glide_timeout", "glide_timeout", "ms", "glide_timeout", 0, 120000, 1000, 0, "GLIDE 強制終了 (0=無効)")}
+        </div>
+        <div className="text-[10px] text-glider-textMute leading-snug pt-2">
+          ※ landed_g の意味は v17 以降「<code className="font-mono">||a|-1g| &lt; 値</code>」(地面に静置されている = 重力のみ作用) に変更。
+          旧版は <code className="font-mono">|az| &lt; 値</code> で自由落下しか想定していなかったため、机置きで発火しないバグでした。
         </div>
       </details>
     </div>

@@ -125,7 +125,9 @@ DISARMED → (arm) → PRELAUNCH → (|a|>launch_g) → LAUNCH (climb-out)
 - **armed 中 (DISARMED 以外) は failsafe 抑制** — 地上局接続が落ちても飛行を継続できます。
 - **LAUNCH 直後の 500ms は PID 出力ゼロホールド** — Madgwick が投擲ショックから復帰する猶予。
 - **LAUNCH 中のエレベータ feed-forward** — `climb_ff` (既定 +5°) を加算し機首上げを補助。
-- **LANDED 自動検出** — `|az|<landed_g` が `landed_ms` 連続したらサーボ中立で停止。
+- **LANDED 自動検出** — `||a|-1g| < landed_g` (静置) かつ `max|gyro| < landed_gyro` (停止) が `landed_ms` 連続したらサーボ中立で停止。
+- **`glide_timeout` ハードタイムアウト** — GLIDE が 20 秒 (既定) を超えたら強制 LANDED。
+- **手動 `land` コマンド / WebUI の 🛬 Land ボタン** — 自動検出に頼らず即座に LANDED へ遷移。
 
 ### D 項のソース (P0-3)
 

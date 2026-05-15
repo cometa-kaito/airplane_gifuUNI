@@ -182,8 +182,13 @@ uint32_t launchGraceMs = 500;               // LAUNCH 直後の PID ゼロホー
 float climbTargetPitch = 15.0f;             // LAUNCH 中の目標 pitch [deg]
 float glideTargetPitch = 3.0f;              // GLIDE 中の目標 pitch [deg]
 float climbElevatorFF = 5.0f;               // LAUNCH 中のエレベータ feed-forward [deg]
-float landedAzG = 0.3f;                     // |az| がこれ未満の状態が続くと着地と判定 [g]
-uint32_t landedHoldMs = 1000;               // 着地判定の累積時間 [ms]
+// 着地検出: 「地面に静置されている」状態を「|a|≈1g かつ角速度がほぼゼロ」で判定する。
+//   旧版は |az|<0.3 (自由落下を想定) だったが、机に置いた状態の az≈1g で発火せず、
+//   GLIDE から戻れなくなるバグだった。
+float landedAzG = 0.15f;                    // ||a|-1.0g| がこれ未満 = 重力のみ作用中 [g]
+float landedGyroMax = 5.0f;                 // max(|gx|,|gy|,|gz|) がこれ未満 = 停止 [deg/s]
+uint32_t landedHoldMs = 1000;               // 上記両条件が連続成立する必要時間 [ms]
+uint32_t glideTimeoutMs = 20000;            // GLIDE 持続の上限。経過したら強制 LANDED (0 で無効) [ms]
 const uint8_t LAUNCH_TRIGGER_FRAMES = 2;    // 連続超過フレーム数 (~62ms @30Hz)
 
 uint8_t launchHighGCount = 0;               // 連続検出カウンタ
@@ -386,8 +391,12 @@ static void printStatus() {
     (unsigned long)climbMs, climbTargetPitch, glideTargetPitch);
   radioPrintln(buf);
   snprintf(buf, sizeof(buf),
-    "[STATUS] climb_ff_elev=%.1f landed_g=%.2f landed_ms=%lu d_source=%s",
-    climbElevatorFF, landedAzG, (unsigned long)landedHoldMs,
+    "[STATUS] climb_ff_elev=%.1f landed_g=%.2f landed_gyro=%.1f landed_ms=%lu",
+    climbElevatorFF, landedAzG, landedGyroMax, (unsigned long)landedHoldMs);
+  radioPrintln(buf);
+  snprintf(buf, sizeof(buf),
+    "[STATUS] glide_timeout=%lums d_source=%s",
+    (unsigned long)glideTimeoutMs,
     dSource == DSRC_GYRO ? "GYRO" : "ERROR");
   radioPrintln(buf);
 }
@@ -418,14 +427,17 @@ static void printHelp() {
   radioPrintln("[INFO] Flight Phase Machine (autonomous glide):");
   radioPrintln("[INFO]   arm                  PRELAUNCH (wait throw, MANUAL hold)");
   radioPrintln("[INFO]   disarm               back to DISARMED (cancel flight)");
+  radioPrintln("[INFO]   land                 force LANDED transition (manual landing)");
   radioPrintln("[INFO]   phase                show current phase only");
   radioPrintln("[INFO]   launch_g <g>         throw-detect accel threshold (default 2.5)");
   radioPrintln("[INFO]   climb_ms <ms>        LAUNCH phase duration (default 1500)");
   radioPrintln("[INFO]   climb_pitch <deg>    LAUNCH target pitch (default +15)");
   radioPrintln("[INFO]   glide_pitch <deg>    GLIDE target pitch (default +3)");
   radioPrintln("[INFO]   climb_ff <deg>       LAUNCH elevator feed-forward (default +5)");
-  radioPrintln("[INFO]   landed_g <g>         |az| below this counts as landed (default 0.3)");
-  radioPrintln("[INFO]   landed_ms <ms>       sustained-below time for landed (default 1000)");
+  radioPrintln("[INFO]   landed_g <g>         ||a|-1g| below this = still (default 0.15)");
+  radioPrintln("[INFO]   landed_gyro <deg/s>  max gyro below this = still (default 5)");
+  radioPrintln("[INFO]   landed_ms <ms>       both conditions sustained for this = LANDED (default 1000)");
+  radioPrintln("[INFO]   glide_timeout <ms>   hard timeout from GLIDE to LANDED (default 20000, 0 disables)");
   radioPrintln("[INFO]   d_source <gyro|err>  D-term source: gyro (default) or err (legacy)");
 }
 
@@ -601,6 +613,12 @@ static void handleCommandLine(char* line) {
     phaseTransition(PHASE_DISARMED);
     return;
   }
+  // 強制 LANDED 遷移 (どのフェーズからでも有効、ユーザ要望: 手動着地)
+  //   例: GLIDE で自動 LANDED 条件が満たされない (振動環境、傾斜地等) ときの脱出口。
+  if (iequals(cmd, "land")) {
+    phaseTransition(PHASE_LANDED);
+    return;
+  }
   if (iequals(cmd, "phase")) {
     static const char* PN[] = {"DISARMED","PRELAUNCH","LAUNCH","GLIDE","LANDED"};
     char buf[64];
@@ -625,7 +643,8 @@ static void handleCommandLine(char* line) {
   // フェーズ毎の挙動チューニング
   if (iequals(cmd, "climb_ms") || iequals(cmd, "climb_pitch") ||
       iequals(cmd, "climb_ff") || iequals(cmd, "glide_pitch") ||
-      iequals(cmd, "landed_g") || iequals(cmd, "landed_ms")) {
+      iequals(cmd, "landed_g") || iequals(cmd, "landed_ms") ||
+      iequals(cmd, "landed_gyro") || iequals(cmd, "glide_timeout")) {
     char* arg = nextToken(p);
     float v;
     if (!arg || !parseFloat(arg, &v)) {
@@ -652,11 +671,19 @@ static void handleCommandLine(char* line) {
     } else if (iequals(cmd, "landed_g")) {
       if (v < 0.0f || v > 1.0f) { radioPrintln("[INFO] landed_g range 0..1"); return; }
       landedAzG = v;
-      snprintf(buf, sizeof(buf), "[PARAM] landed_g=%.2f", landedAzG);
-    } else { // landed_ms
+      snprintf(buf, sizeof(buf), "[PARAM] landed_g=%.2f (||a|-1g| threshold)", landedAzG);
+    } else if (iequals(cmd, "landed_ms")) {
       if (v < 100 || v > 10000) { radioPrintln("[INFO] landed_ms range 100..10000"); return; }
       landedHoldMs = (uint32_t)v;
       snprintf(buf, sizeof(buf), "[PARAM] landed_ms=%lu", (unsigned long)landedHoldMs);
+    } else if (iequals(cmd, "landed_gyro")) {
+      if (v < 0.0f || v > 200.0f) { radioPrintln("[INFO] landed_gyro range 0..200"); return; }
+      landedGyroMax = v;
+      snprintf(buf, sizeof(buf), "[PARAM] landed_gyro=%.1f deg/s", landedGyroMax);
+    } else { // glide_timeout
+      if (v < 0 || v > 120000) { radioPrintln("[INFO] glide_timeout range 0..120000 (0 disables)"); return; }
+      glideTimeoutMs = (uint32_t)v;
+      snprintf(buf, sizeof(buf), "[PARAM] glide_timeout=%lums", (unsigned long)glideTimeoutMs);
     }
     radioPrintln(buf);
     return;
@@ -849,15 +876,28 @@ void loop() {
       }
     } break;
     case PHASE_GLIDE: {
-      // |az| < landed_g が landed_ms 累積で LANDED へ
-      // (重力が消えた = 落下中 ではなく、機体が地面に置かれて自由落下しない状態を狙う)
-      if (fabsf(az) < landedAzG) {
+      // 着地検出: |a| が 1g 近く (= 振動も急減速も無い) AND 角速度がほぼゼロ
+      // が landed_ms 累積で成立 → LANDED。
+      // 旧版 (|az|<0.3) は自由落下しか想定しておらず、机置きの az≈1g では発火
+      // しなかったため修正。aDev は |a| 大きさが 1g からどれだけずれているかの絶対値。
+      float aDev = fabsf(aMag - 1.0f);
+      float gMaxAbs = fabsf(gx);
+      if (fabsf(gy) > gMaxAbs) gMaxAbs = fabsf(gy);
+      if (fabsf(gz) > gMaxAbs) gMaxAbs = fabsf(gz);
+      if (aDev < landedAzG && gMaxAbs < landedGyroMax) {
         landedAccumMs += dt_ms;
         if (landedAccumMs >= landedHoldMs) {
           phaseTransition(PHASE_LANDED);
         }
       } else {
         landedAccumMs = 0;
+      }
+      // ハードタイムアウト: GLIDE が長過ぎたら強制 LANDED (フェイルセーフ)。
+      // 競技時間は数〜10秒なので、20秒も飛んでいるなら状態異常か地形に引っかかっている。
+      if (glideTimeoutMs > 0
+          && (uint32_t)(millis() - phaseStartMs) >= glideTimeoutMs) {
+        radioPrintln("[PHASE] GLIDE timeout -> LANDED");
+        phaseTransition(PHASE_LANDED);
       }
     } break;
     default:

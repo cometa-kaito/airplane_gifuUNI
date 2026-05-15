@@ -899,13 +899,19 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_arm.clicked.connect(lambda: self.serial_io.send_command("arm"))
         ctl_layout.addWidget(btn_arm, row, 1)
 
+        btn_land = QtWidgets.QPushButton("🛬 Land")
+        btn_land.setMinimumWidth(60)
+        btn_land.setToolTip("強制 LANDED 遷移（GLIDE で詰まった時 / 安全停止）")
+        btn_land.clicked.connect(lambda: self.serial_io.send_command("land"))
+        ctl_layout.addWidget(btn_land, row, 2)
+
         btn_disarm = QtWidgets.QPushButton("Disarm")
         btn_disarm.setMinimumWidth(60)
-        btn_disarm.setToolTip("武装解除（地上テスト用）")
+        btn_disarm.setToolTip("武装解除（地上テスト用 / LANDED からの復帰）")
         btn_disarm.clicked.connect(lambda: self.serial_io.send_command("disarm"))
-        ctl_layout.addWidget(btn_disarm, row, 2)
+        ctl_layout.addWidget(btn_disarm, row, 3)
 
-        ctl_layout.addWidget(QtWidgets.QLabel("launch_g:"), row, 3)
+        ctl_layout.addWidget(QtWidgets.QLabel("launch_g:"), row, 5)
         self.spin_launch_g = QtWidgets.QDoubleSpinBox()
         self.spin_launch_g.setRange(1.0, 8.0)
         self.spin_launch_g.setSingleStep(0.1)
@@ -917,7 +923,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_launch_g.editingFinished.connect(
             lambda: self.serial_io.send_command(f"launch_g {self.spin_launch_g.value():.2f}")
         )
-        ctl_layout.addWidget(self.spin_launch_g, row, 4)
+        ctl_layout.addWidget(self.spin_launch_g, row, 6)
 
         # ---- PID ゲイン ヘッダー ----
         row += 1

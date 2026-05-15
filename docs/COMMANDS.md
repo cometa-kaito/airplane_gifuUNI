@@ -73,14 +73,17 @@
 | `unzero` | `zero` で設定したオフセットを解除して生 IMU 出力に戻す |
 | `arm` | **フェーズマシン開始**: DISARMED → PRELAUNCH。`|a|>launch_g` の連続検出を待ち、検知すると LAUNCH → GLIDE → LANDED へ自動遷移。Arm 中は failsafe が抑制される |
 | `disarm` | DISARMED に戻す（地上テスト・着地後の復帰） |
+| `land` | **強制 LANDED 遷移**（どのフェーズからでも有効）。GLIDE 自動検出が起きない / 安全停止したい時に使う |
 | `phase` | 現在フェーズと経過時間を表示 |
 | `launch_g <g>` | 投擲判定の加速度しきい値 [g]。既定 2.5、範囲 1.0..8.0 |
 | `climb_ms <ms>` | LAUNCH フェーズの持続時間 [ms]。既定 1500、範囲 200..10000 |
 | `climb_pitch <deg>` | LAUNCH 中の目標 pitch（機首上げ）。既定 +15°、範囲 -45..60 |
 | `climb_ff <deg>` | LAUNCH 中のエレベータ feed-forward 加算。既定 +5°、範囲 -30..30 |
 | `glide_pitch <deg>` | GLIDE 中の目標 pitch（最良滑空）。既定 +3°、範囲 -20..30 |
-| `landed_g <g>` | `|az|` がこの値を下回る状態が続くと着地と判定。既定 0.3、範囲 0..1 |
-| `landed_ms <ms>` | 着地判定の累積必要時間 [ms]。既定 1000、範囲 100..10000 |
+| `landed_g <g>` | **`||a|-1g|`** がこの値未満 = 重力のみ作用 = 静置と判定。既定 **0.15**、範囲 0..1。**※ v17 で意味変更**: 旧 firmware は `|az|<th` (自由落下) だったが、机置きで発火しないバグだったため修正 |
+| `landed_gyro <°/s>` | `max(|gx|,|gy|,|gz|)` がこの値未満 = 停止していると判定。既定 5.0、範囲 0..200 |
+| `landed_ms <ms>` | `landed_g` と `landed_gyro` の両方が連続成立する必要時間 [ms]。既定 1000、範囲 100..10000 |
+| `glide_timeout <ms>` | GLIDE 持続のハードタイムアウト [ms]。これを超えたら強制 LANDED。既定 20000、`0` で無効 |
 | `d_source <gyro\|error>` | D 項の計算ソース。**既定 gyro**（Lesson17 推奨。ジャイロ生値を直接使用）。`error` で従来の `(e-prevE)/dt + dfilter` に戻る |
 
 ### 取付角キャリブレーション (`zero`)
