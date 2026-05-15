@@ -240,8 +240,9 @@ static void printHelp() {
   radioPrintln("[INFO]   s2 <v>  (D2 elevator)");
   radioPrintln("[INFO] Other:");
   radioPrintln("[INFO]   status / help / tlm on / tlm off");
+  radioPrintln("[INFO]   ping               heartbeat (silent, keeps uplink alive)");
   radioPrintln("[INFO]   failsafe <ms>      uplink-loss timeout (0 = disabled)");
-  radioPrintln("[INFO]   safe_angle <deg>   tilt-safeguard threshold (0 = disabled)");
+  radioPrintln("[INFO]   safe_angle <deg>   tilt-safeguard threshold (0 or >=180 = disabled)");
 }
 
 // =============================================================
@@ -274,6 +275,12 @@ static void handleCommandLine(char* line) {
   }
   if (iequals(cmd, "help") || iequals(cmd, "?")) { printHelp(); return; }
   if (iequals(cmd, "status")) { printStatus(); return; }
+
+  // ハートビート: 何も返さず lastUplinkMs だけ更新 (pollSerialCommands で更新済)
+  // failsafe を発火させないために WebUI が ~750ms 毎に送る無害な ping。
+  if (iequals(cmd, "ping")) {
+    return;
+  }
 
   if (iequals(cmd, "tlm")) {
     char* arg = nextToken(p);
@@ -479,7 +486,13 @@ void loop() {
   //   AUTO 中に |roll| または |pitch| がしきい値を超えたら強制 MANUAL + trim=0。
   //   ラッチ式 (tiltSafeguardTriggered) のため、メッセージは 1回だけ送出。
   //   再武装は AUTO 系コマンド受信時。
-  if (tiltSafeguardDeg > 0.0f && baseMode == MODE_AUTO && !tiltSafeguardTriggered) {
+  //
+  //   注意: tiltSafeguardDeg が 180 以上のときは「無効」として扱う。
+  //   Madgwick の roll 出力は [-180,+180] のため |roll| は最大 180、
+  //   浮動小数誤差で 180.0000xf が出る場合があり、`> 180` 比較が境界で
+  //   誤動作する可能性があるため、しきい値は厳密に (0, 180) の範囲でのみ有効。
+  if (tiltSafeguardDeg > 0.0f && tiltSafeguardDeg < 180.0f
+      && baseMode == MODE_AUTO && !tiltSafeguardTriggered) {
     float ar = fabsf(Q[0]);
     float ap = fabsf(Q[1]);
     float tiltMax = ar > ap ? ar : ap;

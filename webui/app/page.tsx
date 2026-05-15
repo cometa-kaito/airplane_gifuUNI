@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useTelemetry } from "./hooks/useTelemetry";
 import { useWebSerial } from "./hooks/useWebSerial";
+import { useHeartbeat } from "./hooks/useHeartbeat";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import { ModeSelector, type SourceMode } from "./components/ModeSelector";
 import { CommandPanel } from "./components/CommandPanel";
@@ -57,6 +58,15 @@ export default function Page() {
 
   const url = mode === "websocket" ? WS_URL : "WebSerial (USB direct)";
   const attitudeRef = useMemo(() => latestRef, [latestRef]);
+
+  // 接続中は ~750ms 毎に ping を送って機体の failsafe (uplink timeout) を発火させない
+  const sendCommand =
+    mode === "websocket" ? wsHook.sendCommand : wsSerial.sendCommand;
+  const heartbeat = useHeartbeat({
+    enabled: status === "open",
+    intervalMs: 750,
+    onSend: sendCommand,
+  });
 
   return (
     <main className="min-h-screen">
@@ -152,22 +162,23 @@ export default function Page() {
         {/* SECONDARY TELEMETRY (IMU & system) */}
         <TelemetryPanel attitudeRef={attitudeRef} />
 
-        {/* SAFETY · 姿勢角しきい値 (auto -> manual on overtilt) */}
+        {/* SAFETY · 姿勢角しきい値 + Failsafe (auto -> manual triggers) */}
         <SafetyPanel
           attitudeRef={attitudeRef}
-          onSend={mode === "websocket" ? wsHook.sendCommand : wsSerial.sendCommand}
+          heartbeatSentCount={heartbeat.sentCount}
+          onSend={sendCommand}
           enabled={status === "open"}
         />
 
         {/* QUICK MANUAL CONTROL — D-pad + keyboard */}
         <QuickControl
-          onSend={mode === "websocket" ? wsHook.sendCommand : wsSerial.sendCommand}
+          onSend={sendCommand}
           enabled={status === "open"}
         />
 
         {/* COMMAND */}
         <CommandPanel
-          onSend={mode === "websocket" ? wsHook.sendCommand : wsSerial.sendCommand}
+          onSend={sendCommand}
           enabled={status === "open"}
           hint={
             mode === "websocket"
