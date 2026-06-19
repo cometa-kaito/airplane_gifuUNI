@@ -26,7 +26,9 @@ export function ArtificialHorizon({
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
+    let stopped = false;
     const tick = () => {
+      if (stopped) return;
       const f = attitudeRef.current;
       if (f) {
         // pitch: 1deg = 2px shift
@@ -60,7 +62,8 @@ export function ArtificialHorizon({
     };
     rafRef.current = requestAnimationFrame(tick);
     return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      stopped = true;
+      if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     };
   }, [attitudeRef]);
 

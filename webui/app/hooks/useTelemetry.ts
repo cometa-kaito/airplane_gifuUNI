@@ -51,6 +51,7 @@ export function useTelemetry(url: string, token?: string) {
 
   const wsRef = useRef<WebSocket | null>(null);
   const retryRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
   const tokenRef = useRef<string | undefined>(token);
   tokenRef.current = token;
 
@@ -122,6 +123,7 @@ export function useTelemetry(url: string, token?: string) {
 
         ws.addEventListener("close", () => {
           setStatus("closed");
+          if (!mountedRef.current) return;
           retryRef.current = window.setTimeout(() => {
             backoff = Math.min(backoff * 1.5, 5000);
             tryConnect();
@@ -139,14 +141,15 @@ export function useTelemetry(url: string, token?: string) {
       setStatus("closed");
       return;
     }
+    mountedRef.current = true;
     connect();
     return () => {
+      mountedRef.current = false;
       if (retryRef.current !== null) {
         window.clearTimeout(retryRef.current);
       }
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.close();
-      }
+      // readyState に関わらず close する（CONNECTING 中も含む）
+      wsRef.current?.close();
     };
   }, [connect, url]);
 

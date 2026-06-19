@@ -170,8 +170,12 @@ export function useWebSerial() {
     stopFlagRef.current = true;
 
     // 1) reader をキャンセル（pending な reader.read() を {done:true} で resolve させる）
+    // USB サスペンド時に cancel() が永久に hang するケースがあるため 2s でタイムアウト。
     if (readerRef.current) {
-      try { await readerRef.current.cancel(); } catch {}
+      try {
+        const timeout = new Promise<void>((_, rej) => window.setTimeout(() => rej(new Error("cancel timeout")), 2000));
+        await Promise.race([readerRef.current.cancel(), timeout]);
+      } catch {}
     }
 
     // 2) 読み込みループの finally まで完了させる（reader.releaseLock() が中で走る）

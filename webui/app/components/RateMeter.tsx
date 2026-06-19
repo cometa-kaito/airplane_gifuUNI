@@ -8,6 +8,8 @@ import { useEffect, useRef, useState } from "react";
  */
 export function RateMeter({ rxCount }: { rxCount: number }) {
   const [hz, setHz] = useState(0);
+  const rxCountRef = useRef(rxCount);
+  rxCountRef.current = rxCount;
   const lastRxRef = useRef(rxCount);
   const lastTRef = useRef(Date.now());
 
@@ -16,16 +18,16 @@ export function RateMeter({ rxCount }: { rxCount: number }) {
       const now = Date.now();
       const dt = (now - lastTRef.current) / 1000;
       if (dt > 0) {
-        const drx = rxCount - lastRxRef.current;
+        const drx = rxCountRef.current - lastRxRef.current;
         const rate = drx / dt;
         // 軽いLPF
         setHz((prev) => prev * 0.4 + rate * 0.6);
       }
-      lastRxRef.current = rxCount;
+      lastRxRef.current = rxCountRef.current;
       lastTRef.current = now;
     }, 500);
     return () => window.clearInterval(id);
-  }, [rxCount]);
+  }, []);
 
   // 色: 0 = ミュート, 良好 = 緑, 遅延気味 = 黄
   const color =

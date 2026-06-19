@@ -104,7 +104,9 @@ export function ServoBars({
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
+    let stopped = false;
     const tick = () => {
+      if (stopped) return;
       const f = attitudeRef.current;
       if (f) {
         for (const s of SERVOS) {
@@ -122,7 +124,8 @@ export function ServoBars({
     };
     rafRef.current = requestAnimationFrame(tick);
     return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      stopped = true;
+      if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     };
   }, [attitudeRef]);
 

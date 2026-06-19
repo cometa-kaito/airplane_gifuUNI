@@ -726,7 +726,9 @@ static void handleCommandLine(char* line) {
 }
 
 static void pollSerialCommands() {
-  while (RADIO_SERIAL.available()) {
+  // 1回の loop() で処理するバイト上限。UART 大量流入で PID/サーボ出力が飢餓になるのを防ぐ。
+  uint8_t budget = 128;
+  while (budget-- && RADIO_SERIAL.available()) {
     int c = RADIO_SERIAL.read();
     if (c < 0) break;
 

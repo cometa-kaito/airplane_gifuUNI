@@ -183,14 +183,14 @@ bool handleLocalCommand(const char* line) {
     }
     savePeerToNvs(m);
     g_uart_port->println("[INFO] peer saved, restarting...");
-    delay(200);
+    g_uart_port->flush(); delay(10);
     ESP.restart();
     return true;
   }
   if (strcmp(line, "/unpair") == 0) {
     clearPeerInNvs();
     g_uart_port->println("[INFO] peer cleared, restarting...");
-    delay(200);
+    g_uart_port->flush(); delay(10);
     ESP.restart();
     return true;
   }
@@ -202,7 +202,7 @@ bool handleLocalCommand(const char* line) {
     }
     saveChannelToNvs(ch);
     g_uart_port->println("[INFO] channel saved, restarting...");
-    delay(200);
+    g_uart_port->flush(); delay(10);
     ESP.restart();
     return true;
   }
@@ -319,7 +319,10 @@ void processUartLoop() {
   static char line[kLineMax + 1];
   static uint16_t idx = 0;
 
-  while (g_uart_port->available()) {
+  // 1回の loop() で処理するバイト上限。UART 大量流入で WDT リセットや
+  // ESP-NOW 送信失敗エラー連鎖を防ぐ。
+  uint8_t budget = 128;
+  while (budget-- && g_uart_port->available()) {
     int c = g_uart_port->read();
     if (c < 0) break;
     if (c == '\r') continue;
