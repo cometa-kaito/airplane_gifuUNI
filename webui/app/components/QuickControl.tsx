@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { TrimApi } from "../hooks/useTrim";
 
 const STEPS = [5, 10, 20] as const;
 type Step = (typeof STEPS)[number];
@@ -11,86 +12,76 @@ type Step = (typeof STEPS)[number];
  * Python ground_station.py の Quick Manual Control を移植。
  * - ↑/↓: pitch (s2)
  * - ←/→: roll (s0/s1 を逆位相で動かす)
- * - Space: center (全部 0 に)
+ * - Space: 中立へ戻す (TrimSetupPanel で設定した中立角)
  * - M/A: モード切替
+ *
+ * トリムは TrimSetupPanel と共有 (useTrim)。ここでは中立からの一時的な偏向
+ * (テスト操舵) を行い、Space で保存済み中立に戻す。中立そのものの設定・保存は
+ * TrimSetupPanel 側で行う。
  *
  * MANUAL モードでは送信した数値が直接サーボ角度に、
  * AUTO モードでは PID 出力に対する trim となる (機体側 ino の仕様)。
  */
 export function QuickControl({
+  trim,
   onSend,
   enabled,
 }: {
+  trim: TrimApi;
   onSend: (cmd: string) => Promise<void>;
   enabled: boolean;
 }) {
+  const { live, nudgeLive, recallNeutral } = trim;
   const [step, setStep] = useState<Step>(10);
-  const [trim, setTrim] = useState({ s0: 0, s1: 0, s2: 0 });
   const [lastAction, setLastAction] = useState<string>("");
 
   // closure に頼らず最新値を読むための ref
-  const trimRef = useRef(trim);
   const stepRef = useRef<Step>(step);
   const enabledRef = useRef(enabled);
-  useEffect(() => {
-    trimRef.current = trim;
-  }, [trim]);
+  const nudgeRef = useRef(nudgeLive);
+  const recallRef = useRef(recallNeutral);
   useEffect(() => {
     stepRef.current = step;
   }, [step]);
   useEffect(() => {
     enabledRef.current = enabled;
   }, [enabled]);
-
-  const clamp = (v: number) => Math.max(-90, Math.min(90, v));
-
-  const setServo = useCallback(
-    (idx: 0 | 1 | 2, value: number) => {
-      const v = Math.round(clamp(value));
-      const key = `s${idx}` as "s0" | "s1" | "s2";
-      const next = { ...trimRef.current, [key]: v };
-      trimRef.current = next;
-      setTrim(next);
-      if (enabledRef.current) {
-        onSend(`s${idx} ${v}`).catch(() => {
-          // 失敗してもUI状態は維持（次のコマンドで上書きされる）
-        });
-      }
-    },
-    [onSend],
-  );
+  useEffect(() => {
+    nudgeRef.current = nudgeLive;
+  }, [nudgeLive]);
+  useEffect(() => {
+    recallRef.current = recallNeutral;
+  }, [recallNeutral]);
 
   const pitchUp = useCallback(() => {
-    setServo(2, trimRef.current.s2 + stepRef.current);
+    nudgeRef.current(2, +stepRef.current);
     setLastAction("↑ Pitch Up");
-  }, [setServo]);
+  }, []);
 
   const pitchDn = useCallback(() => {
-    setServo(2, trimRef.current.s2 - stepRef.current);
+    nudgeRef.current(2, -stepRef.current);
     setLastAction("↓ Pitch Down");
-  }, [setServo]);
+  }, []);
 
   const rollL = useCallback(() => {
     // 左ロール: 右エルロン下げ (-) / 左エルロン上げ (+)
     const d = stepRef.current;
-    setServo(0, trimRef.current.s0 - d);
-    setServo(1, trimRef.current.s1 + d);
+    nudgeRef.current(0, -d);
+    nudgeRef.current(1, +d);
     setLastAction("← Roll Left");
-  }, [setServo]);
+  }, []);
 
   const rollR = useCallback(() => {
     const d = stepRef.current;
-    setServo(0, trimRef.current.s0 + d);
-    setServo(1, trimRef.current.s1 - d);
+    nudgeRef.current(0, +d);
+    nudgeRef.current(1, -d);
     setLastAction("Roll Right →");
-  }, [setServo]);
+  }, []);
 
   const center = useCallback(() => {
-    setServo(0, 0);
-    setServo(1, 0);
-    setServo(2, 0);
-    setLastAction("⊙ Center");
-  }, [setServo]);
+    recallRef.current();
+    setLastAction("⊙ 中立へ戻す");
+  }, []);
 
   // キーボードハンドラ (input にフォーカス中はキャプチャしない)
   useEffect(() => {
@@ -156,8 +147,9 @@ export function QuickControl({
             Quick Manual Control
           </h3>
           <div className="text-xs text-slate-500 mt-1 leading-snug">
-            ボタン or キーボード <kbd className="kbd">↑↓←→</kbd> /{" "}
-            <kbd className="kbd">Space</kbd> /{" "}
+            中立からの一時的なテスト操舵。ボタン or キーボード{" "}
+            <kbd className="kbd">↑↓←→</kbd> /{" "}
+            <kbd className="kbd">Space</kbd> (中立へ) /{" "}
             <kbd className="kbd">M</kbd> (Manual) /{" "}
             <kbd className="kbd">A</kbd> (Auto/PID)
           </div>
@@ -189,8 +181,8 @@ export function QuickControl({
             className="stat-val text-lg font-semibold"
             style={{ color: "#ea580c" }}
           >
-            {trim.s0 >= 0 ? "+" : ""}
-            {trim.s0}°
+            {live.s0 >= 0 ? "+" : ""}
+            {live.s0}°
           </span>
         </div>
         <div className="flex items-baseline gap-1.5">
@@ -201,8 +193,8 @@ export function QuickControl({
             className="stat-val text-lg font-semibold"
             style={{ color: "#ca8a04" }}
           >
-            {trim.s1 >= 0 ? "+" : ""}
-            {trim.s1}°
+            {live.s1 >= 0 ? "+" : ""}
+            {live.s1}°
           </span>
         </div>
         <div className="flex items-baseline gap-1.5">
@@ -213,8 +205,8 @@ export function QuickControl({
             className="stat-val text-lg font-semibold"
             style={{ color: "#65a30d" }}
           >
-            {trim.s2 >= 0 ? "+" : ""}
-            {trim.s2}°
+            {live.s2 >= 0 ? "+" : ""}
+            {live.s2}°
           </span>
         </div>
         {lastAction && (
@@ -283,9 +275,9 @@ export function QuickControl({
                 padBtn +
                 " !bg-emerald-50 !ring-emerald-200 !text-emerald-700 hover:!bg-emerald-100 hover:!ring-emerald-300"
               }
-              title="Center all (Space)"
+              title="中立へ戻す (Space) — TrimSetupPanel で設定した中立角"
             >
-              ⊙<div className="text-[9px] font-normal opacity-80">Center</div>
+              ⊙<div className="text-[9px] font-normal opacity-80">中立へ</div>
             </button>
             <button
               onClick={rollR}

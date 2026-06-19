@@ -18,7 +18,9 @@ import { Glider3D } from "./components/Glider3D";
 import { RateMeter } from "./components/RateMeter";
 import { RecorderPanel } from "./components/RecorderPanel";
 import { QuickControl } from "./components/QuickControl";
+import { TrimSetupPanel } from "./components/TrimSetupPanel";
 import { GainPanel } from "./components/GainPanel";
+import { useTrim } from "./hooks/useTrim";
 import { SafetyPanel } from "./components/SafetyPanel";
 import { CalibrationPanel } from "./components/CalibrationPanel";
 import { LaunchPanel } from "./components/LaunchPanel";
@@ -112,6 +114,10 @@ export default function Page() {
     onSend: sendCommand,
   });
 
+  // サーボ中立トリム (s0/s1/s2) — TrimSetupPanel と QuickControl で共有。
+  // 保存済み中立を接続時に機体へ自動同期する。
+  const trim = useTrim(sendCommand, status === "open");
+
   return (
     <main className="min-h-screen">
       {/* Sticky header — Step 0: Connect。クリーンな白背景、薄い shadow で区切る */}
@@ -197,7 +203,7 @@ export default function Page() {
                 Pre-flight Workflow
               </h2>
               <p className="text-sm text-slate-500 mt-0.5">
-                上から順に ① キャリブ → ② 安全装置 → ③ トリム → ④ PID → ⑤ Launch
+                上から順に ⓪ サーボトリム → ① キャリブ → ② 安全装置 → ③ 手動確認 → ④ PID → ⑤ Launch
               </p>
             </div>
             <span
@@ -215,6 +221,21 @@ export default function Page() {
               />
               {status === "open" ? "Device Connected" : "Waiting Device"}
             </span>
+          </div>
+
+          {/* Step 0: サーボトリム（全モード共通の機械的 GND。最初に設定する） */}
+          <div>
+            <StepHeader
+              num={0}
+              title="Servo Trim · 機械的中立（全モード GND）"
+              hint="サーボ 0° と実機の真っすぐが一致しない場合、ここで補正する。AUTO・風洞どちらもこの値が基準"
+            />
+            <TrimSetupPanel
+              trim={trim}
+              attitudeRef={attitudeRef}
+              onSend={sendCommand}
+              enabled={status === "open"}
+            />
           </div>
 
           {/* Step 1: キャリブレーション（機体を水平面に置いた状態で実施） */}
@@ -247,14 +268,18 @@ export default function Page() {
             />
           </div>
 
-          {/* Step 3: 手動トリム + モード（MANUAL で各舵の中立を合わせる） */}
+          {/* Step 3: 手動操舵確認（MANUAL でサーボ動作・舵の効きをチェック） */}
           <div>
             <StepHeader
               num={3}
-              title="Trim & Mode · 手動操舵で中立調整"
-              hint="MANUAL で D-Pad / 矢印キー、AUTO 切替も同パネル"
+              title="Manual Check · 手動操舵確認"
+              hint="MANUAL に切替えて D-Pad / 矢印キーで舵の効きを確認"
             />
-            <QuickControl onSend={sendCommand} enabled={status === "open"} />
+            <QuickControl
+              trim={trim}
+              onSend={sendCommand}
+              enabled={status === "open"}
+            />
           </div>
 
           {/* Step 4: PID ゲイン（地上で挙動を確認しつつ調整） */}

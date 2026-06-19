@@ -219,6 +219,10 @@ export function WindTunnelPanel({
           <div className="text-[11px] text-glider-textMute mt-1 leading-snug">
             機体を風洞の支柱に固定して PID 応答を測定。フェーズマシンを介さず PID 常時 ON、
             target_pitch / target_roll を手動操作してステップ応答などを取得。<br />
+            <span className="text-glider-ok">
+              ✓ servo_out = <strong>Step 0 のサーボトリム</strong> + PID出力。風洞でも trim が GND になります。事前に Step 0 を設定してください。
+            </span>
+            <br />
             <span className="text-glider-warn">
               ⚠ Wind Tunnel 中は tilt safeguard / failsafe / climb_ff すべて抑制されます。
               地上飛行テストでは使わないでください。
