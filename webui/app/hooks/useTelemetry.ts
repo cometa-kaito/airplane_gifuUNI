@@ -1,6 +1,12 @@
-"use client";
-
-import { useEffect, useRef, useState, useCallback } from "react";
+// =============================================================
+//  useTelemetry.ts — テレメトリの共有型・定数モジュール
+//
+//  ⚠ 旧 WebSocket 版フック `useTelemetry()`（Python ground_station.py 経由）は
+//     WebSerial 専用化に伴い廃止し、参照用に archive/websocket/useTelemetry_ws.ts
+//     へ退避しました。本ファイルは型/定数のみを提供します（約20コンポーネントが
+//     TelemetryFrame / Status / PHASE_NAMES をここから import しているためファイル名は据置）。
+//     接続は useWebSerial.ts（USB 直結）に一本化。
+// =============================================================
 
 export type TelemetryFrame = {
   seq: number;
@@ -30,149 +36,3 @@ export const PHASE_NAMES = [
 export type PhaseName = (typeof PHASE_NAMES)[number];
 
 export type Status = "connecting" | "open" | "closed" | "error";
-
-const HISTORY = 300;             // ref 内に保持するフレーム数（チャートは部分参照）
-const SETLATEST_THROTTLE_MS = 50;  // 数値表示の更新頻度（=20Hz）
-const SETRX_THROTTLE_MS = 100;     // 受信件数表示の更新頻度（=10Hz）
-
-export function useTelemetry(url: string, token?: string) {
-  const [status, setStatus] = useState<Status>("connecting");
-  const [latest, setLatest] = useState<TelemetryFrame | null>(null);
-  const [rxCount, setRxCount] = useState(0);
-
-  // 常に最新を持つ ref（毎フレーム参照可、再レンダ無し）
-  const latestRef = useRef<TelemetryFrame | null>(null);
-  const historyRef = useRef<TelemetryFrame[]>([]);
-  const rxCounterRef = useRef(0);
-
-  // スロットルタイマ
-  const lastSetLatest = useRef(0);
-  const lastSetRx = useRef(0);
-
-  const wsRef = useRef<WebSocket | null>(null);
-  const retryRef = useRef<number | null>(null);
-  const mountedRef = useRef(true);
-  const tokenRef = useRef<string | undefined>(token);
-  tokenRef.current = token;
-
-  const ingest = useCallback((msg: TelemetryFrame) => {
-    // 旧サーバ (phase/accel_g 非送信) との互換: 欠損は 0 で埋める。
-    if (typeof msg.phase !== "number") (msg as any).phase = 0;
-    if (typeof msg.accel_g !== "number") {
-      // ax,ay,az があるなら計算で補う
-      const ax = msg.ax ?? 0, ay = msg.ay ?? 0, az = msg.az ?? 0;
-      (msg as any).accel_g = Math.sqrt(ax * ax + ay * ay + az * az);
-    }
-
-    // ref は常に更新
-    latestRef.current = msg;
-    const arr = historyRef.current;
-    arr.push(msg);
-    if (arr.length > HISTORY) arr.splice(0, arr.length - HISTORY);
-    rxCounterRef.current++;
-
-    // React state はスロットル
-    const now = performance.now();
-    if (now - lastSetLatest.current >= SETLATEST_THROTTLE_MS) {
-      lastSetLatest.current = now;
-      setLatest(msg);
-    }
-    if (now - lastSetRx.current >= SETRX_THROTTLE_MS) {
-      lastSetRx.current = now;
-      setRxCount(rxCounterRef.current);
-    }
-  }, []);
-
-  const connect = useCallback(() => {
-    setStatus("connecting");
-    let backoff = 1000;
-    const tryConnect = () => {
-      try {
-        const ws = new WebSocket(url);
-        wsRef.current = ws;
-
-        ws.addEventListener("open", () => {
-          setStatus("open");
-          backoff = 1000;
-          // トークンがあれば最初に認証メッセージを送る
-          if (tokenRef.current) {
-            try {
-              ws.send(JSON.stringify({ auth: tokenRef.current }));
-            } catch {
-              // 無視
-            }
-          }
-        });
-
-        ws.addEventListener("message", (ev) => {
-          try {
-            const msg = JSON.parse(ev.data);
-            // テレメトリ判定: seq/roll/pitch を含むものだけ取り込む
-            if (msg && typeof msg === "object" && "seq" in msg && "roll" in msg) {
-              ingest(msg as TelemetryFrame);
-            }
-            // auth/cmd ack 等は単に無視（必要ならここでログ）
-          } catch {
-            // 無視
-          }
-        });
-
-        ws.addEventListener("error", () => {
-          setStatus("error");
-        });
-
-        ws.addEventListener("close", () => {
-          setStatus("closed");
-          if (!mountedRef.current) return;
-          retryRef.current = window.setTimeout(() => {
-            backoff = Math.min(backoff * 1.5, 5000);
-            tryConnect();
-          }, backoff);
-        });
-      } catch {
-        retryRef.current = window.setTimeout(tryConnect, backoff);
-      }
-    };
-    tryConnect();
-  }, [url, ingest]);
-
-  useEffect(() => {
-    if (!url) {
-      setStatus("closed");
-      return;
-    }
-    mountedRef.current = true;
-    connect();
-    return () => {
-      mountedRef.current = false;
-      if (retryRef.current !== null) {
-        window.clearTimeout(retryRef.current);
-      }
-      // readyState に関わらず close する（CONNECTING 中も含む）
-      wsRef.current?.close();
-    };
-  }, [connect, url]);
-
-  const sendCommand = useCallback(async (cmd: string) => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new Error("WebSocket not connected");
-    }
-    ws.send(JSON.stringify({ cmd }));
-  }, []);
-
-  // WebSocket 経路では Python 側が CSV を JSON テレメトリのみ転送するため、
-  // [...] 系の info ログは（現状の Python ground_station では）届かない。
-  // 互換性のため空の ref と tick を返す。
-  const infoLogStub = useRef<{ ts: number; line: string }[]>([]);
-  return {
-    status,
-    latest,
-    latestRef,
-    rxCount,
-    history: historyRef,
-    infoLog: infoLogStub,
-    infoLogTick: 0,
-    sendCommand,
-  };
-}

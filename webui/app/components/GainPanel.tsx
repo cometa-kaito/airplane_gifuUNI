@@ -59,28 +59,76 @@ type Preset = {
   key: string;
   label: string;
   hint: string;
+  group: string; // UI でのグルーピング（風洞スイープ用に系統立てて並べる）
   values: { kp: [number, number]; ki: [number, number]; kd: [number, number] };
 };
 
+// プリセットのグループ表示順。風洞 (Step 5b) で系統立てて試せるよう分類:
+//   汎用        … 通常飛行の出発点（弱→強）
+//   P 単独       … Ki=Kd=0 で Kp だけ上げる。発振開始点(極限ゲイン Ku)探し。Z-N 法の起点。
+//   PD (D比較)   … Kp=2.0 固定で Kd だけ上げ、減衰(オーバーシュート抑制)の効きを見る。
+//   PID (I項)    … 定常偏差を I で詰める。Ki の強さ違い。
+const PRESET_GROUPS = ["汎用", "P 単独 (発振探し)", "PD (D 減衰比較, Kp=2.0)", "PID (I 項あり)"] as const;
+
 const PRESETS: Preset[] = [
+  // ---- 汎用（弱→強）。通常飛行の出発点 ----
   {
     key: "soft",
     label: "Soft (paper)",
     hint: "紙飛行機・初回投擲向け。穏やかな応答・振動抑制重視。",
+    group: "汎用",
     values: { kp: [0.6, 0.6], ki: [0.0, 0.0], kd: [0.03, 0.03] },
   },
   {
     key: "default",
     label: "Default",
     hint: "ファーム既定値。バランス型 (Kp=1.0 / Ki=0.2 / Kd=0.02)。",
+    group: "汎用",
     values: { kp: [1.0, 1.0], ki: [0.2, 0.2], kd: [0.02, 0.02] },
   },
   {
     key: "responsive",
     label: "Responsive",
     hint: "大きめ機体・速度高め向け。応答優先 (Kp 大、Kd 大)。",
+    group: "汎用",
     values: { kp: [1.8, 1.6], ki: [0.1, 0.1], kd: [0.06, 0.05] },
   },
+  {
+    key: "aggressive",
+    label: "Aggressive (強め)",
+    hint: "Responsive より強め。舵の効きが弱い/反応が鈍い機体向け (Kp=2.6/2.4)。振動が出たら Kd を下げる。",
+    group: "汎用",
+    values: { kp: [2.6, 2.4], ki: [0.15, 0.15], kd: [0.08, 0.07] },
+  },
+  {
+    key: "max",
+    label: "Max (最強)",
+    hint: "実験用の最強プリセット。高速・大舵向け (Kp=3.6/3.2)。発振しやすいので必ず風洞/手持ちで確認してから投擲。",
+    group: "汎用",
+    values: { kp: [3.6, 3.2], ki: [0.2, 0.2], kd: [0.10, 0.09] },
+  },
+
+  // ---- P 単独スイープ（Ki=Kd=0）。Kp を上げて持続振動が始まる「極限ゲイン Ku」を探す ----
+  { key: "p05", label: "P 0.5", hint: "P単独 Kp=0.5。純比例の最弱。応答の出発点。", group: "P 単独 (発振探し)", values: { kp: [0.5, 0.5], ki: [0, 0], kd: [0, 0] } },
+  { key: "p10", label: "P 1.0", hint: "P単独 Kp=1.0。", group: "P 単独 (発振探し)", values: { kp: [1.0, 1.0], ki: [0, 0], kd: [0, 0] } },
+  { key: "p15", label: "P 1.5", hint: "P単独 Kp=1.5。", group: "P 単独 (発振探し)", values: { kp: [1.5, 1.5], ki: [0, 0], kd: [0, 0] } },
+  { key: "p20", label: "P 2.0", hint: "P単独 Kp=2.0。", group: "P 単独 (発振探し)", values: { kp: [2.0, 2.0], ki: [0, 0], kd: [0, 0] } },
+  { key: "p30", label: "P 3.0", hint: "P単独 Kp=3.0。この辺りから振動が出やすい。", group: "P 単独 (発振探し)", values: { kp: [3.0, 3.0], ki: [0, 0], kd: [0, 0] } },
+  { key: "p40", label: "P 4.0", hint: "P単独 Kp=4.0。持続振動(極限ゲイン)探し用。", group: "P 単独 (発振探し)", values: { kp: [4.0, 4.0], ki: [0, 0], kd: [0, 0] } },
+  { key: "p50", label: "P 5.0", hint: "P単独 Kp=5.0。発振しやすい。Ku 上限の目安。", group: "P 単独 (発振探し)", values: { kp: [5.0, 5.0], ki: [0, 0], kd: [0, 0] } },
+
+  // ---- PD 減衰比較（Kp=2.0 固定で Kd だけ変える）。D のオーバーシュート抑制効果を見る ----
+  { key: "pd_d00", label: "PD D=0", hint: "Kp=2.0 / Kd=0 (=P単独)。比較の基準。", group: "PD (D 減衰比較, Kp=2.0)", values: { kp: [2.0, 2.0], ki: [0, 0], kd: [0.0, 0.0] } },
+  { key: "pd_d02", label: "PD D=0.02", hint: "Kp=2.0 / Kd=0.02。弱い減衰。", group: "PD (D 減衰比較, Kp=2.0)", values: { kp: [2.0, 2.0], ki: [0, 0], kd: [0.02, 0.02] } },
+  { key: "pd_d05", label: "PD D=0.05", hint: "Kp=2.0 / Kd=0.05。中程度の減衰。", group: "PD (D 減衰比較, Kp=2.0)", values: { kp: [2.0, 2.0], ki: [0, 0], kd: [0.05, 0.05] } },
+  { key: "pd_d10", label: "PD D=0.10", hint: "Kp=2.0 / Kd=0.10。強い減衰。", group: "PD (D 減衰比較, Kp=2.0)", values: { kp: [2.0, 2.0], ki: [0, 0], kd: [0.10, 0.10] } },
+  { key: "pd_d15", label: "PD D=0.15", hint: "Kp=2.0 / Kd=0.15。過減衰気味/ノイズ増幅に注意 (gyro D)。", group: "PD (D 減衰比較, Kp=2.0)", values: { kp: [2.0, 2.0], ki: [0, 0], kd: [0.15, 0.15] } },
+
+  // ---- PID（I 項あり）。定常偏差を I で詰める。Ki 強さ違い ----
+  { key: "pid_light", label: "PID 弱I", hint: "Kp=1.5 / Ki=0.1 / Kd=0.05。穏やかに定常偏差を詰める。", group: "PID (I 項あり)", values: { kp: [1.5, 1.5], ki: [0.1, 0.1], kd: [0.05, 0.05] } },
+  { key: "pid_mid", label: "PID 中I", hint: "Kp=2.0 / Ki=0.2 / Kd=0.06。バランス型の PID。", group: "PID (I 項あり)", values: { kp: [2.0, 2.0], ki: [0.2, 0.2], kd: [0.06, 0.06] } },
+  { key: "pid_strong", label: "PID 強", hint: "Kp=3.0 / Ki=0.3 / Kd=0.08。強めの PID。ワインドアップに注意。", group: "PID (I 項あり)", values: { kp: [3.0, 3.0], ki: [0.3, 0.3], kd: [0.08, 0.08] } },
+  { key: "pid_iheavy", label: "PID I重", hint: "Kp=1.5 / Ki=0.5 / Kd=0.05。I を強く。定常偏差は速く消えるが揺れやすい。", group: "PID (I 項あり)", values: { kp: [1.5, 1.5], ki: [0.5, 0.5], kd: [0.05, 0.05] } },
 ];
 
 const AXES: { letter: Axis; label: string; color: string }[] = [
@@ -375,29 +423,44 @@ export function GainPanel({
         </div>
       </div>
 
-      {/* プリセット (roll/pitch の Kp/Ki/Kd を一括設定) */}
-      <div className="flex items-center gap-2 flex-wrap py-1">
-        <span className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
-          Presets (roll/pitch)
-        </span>
-        {PRESETS.map((p) => (
-          <button
-            key={p.key}
-            onClick={() => applyPreset(p)}
-            disabled={!enabled}
-            title={p.hint}
-            className={`px-3 py-1 text-xs font-bold rounded-md border transition ${
-              matchingPreset === p.key
-                ? "bg-glider-accent/20 border-glider-accent text-glider-accent"
-                : "bg-glider-surface border-glider-border text-glider-textDim hover:border-glider-borderHi"
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
-        <span className="text-[10px] text-glider-textMute italic ml-1">
-          yaw は触りません (ラダー無し)
-        </span>
+      {/* プリセット (roll/pitch の Kp/Ki/Kd を一括設定)。風洞スイープ用にグループ分け */}
+      <div className="space-y-1.5 py-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
+            Presets (roll/pitch)
+          </span>
+          <span className="text-[10px] text-glider-textMute italic">
+            ボタンで即適用＋送信。yaw は触りません (ラダー無し)。風洞 (Step 5b) で系統的に試す用。
+          </span>
+        </div>
+        {PRESET_GROUPS.map((group) => {
+          const items = PRESETS.filter((p) => p.group === group);
+          if (items.length === 0) return null;
+          return (
+            <div key={group} className="flex items-start gap-2 flex-wrap">
+              <span className="text-[10px] font-semibold text-glider-textMute w-full sm:w-auto sm:min-w-[120px] sm:text-right pt-1">
+                {group}
+              </span>
+              <div className="flex items-center gap-1.5 flex-wrap flex-1">
+                {items.map((p) => (
+                  <button
+                    key={p.key}
+                    onClick={() => applyPreset(p)}
+                    disabled={!enabled}
+                    title={p.hint}
+                    className={`px-2.5 py-1 text-xs font-bold rounded-md border transition ${
+                      matchingPreset === p.key
+                        ? "bg-glider-accent/20 border-glider-accent text-glider-accent"
+                        : "bg-glider-surface border-glider-border text-glider-textDim hover:border-glider-borderHi"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       <div className="overflow-x-auto">

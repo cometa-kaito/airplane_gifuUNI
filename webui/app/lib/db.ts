@@ -156,8 +156,10 @@ export async function loadSessionFrames(
     const idx = tx.objectStore(FRAME_STORE).index("sessionId");
     const req = idx.getAll(sessionId);
     req.onsuccess = () => {
+      // チャンクは自動採番 id の昇順 = 挿入順 = 時系列順。
+      // startSeq は機体リブートで 0 に戻り順序が壊れるため id で並べる。
       const chunks = (req.result as FrameChunk[]).sort(
-        (a, b) => a.startSeq - b.startSeq,
+        (a, b) => (a.id ?? 0) - (b.id ?? 0),
       );
       const out: TelemetryFrame[] = [];
       for (const c of chunks) out.push(...c.frames);

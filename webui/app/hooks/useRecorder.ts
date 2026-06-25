@@ -38,7 +38,9 @@ export function useRecorder(historyRef: MutableRefObject<TelemetryFrame[]>) {
 
   const sessionIdRef = useRef<number | null>(null);
   const bufferRef = useRef<TelemetryFrame[]>([]);
-  const lastSavedSeqRef = useRef<number>(-Infinity);
+  // 前回までに記録した「最後のフレーム」そのもの (参照) を保持する。
+  // seq は機体リブートで 0 に戻るため起点に使えない → オブジェクト同一性で追う。
+  const lastFrameRef = useRef<TelemetryFrame | null>(null);
   const totalFramesRef = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
   const flushTimerRef = useRef<number | null>(null);
@@ -64,27 +66,27 @@ export function useRecorder(historyRef: MutableRefObject<TelemetryFrame[]>) {
     const tick = () => {
       if (stopped) return;
       const hist = historyRef.current;
-      const lastSeq = lastSavedSeqRef.current;
       if (hist.length > 0) {
-        // 後ろから走査し、lastSeq 以下にぶつかった一つ次以降が「新規」
-        let firstNew = 0;
-        for (let i = hist.length - 1; i >= 0; i--) {
-          if (hist[i].seq <= lastSeq) {
-            firstNew = i + 1;
-            break;
-          }
-          if (i === 0 && hist[i].seq > lastSeq) {
-            // 全部新規
-            firstNew = 0;
-          }
+        // 取りこぼし/重複なく「前回以降の新規フレーム」を拾う。
+        // seq は機体リブートで 0 に戻るので使わず、前回記録した最後の
+        // フレームオブジェクトを参照一致 (lastIndexOf) で探して位置を特定する。
+        // → リブートで seq が巻き戻っても記録が止まらない。
+        const marker = lastFrameRef.current;
+        let firstNew: number;
+        if (marker === null) {
+          // 録画開始時に history が空だった場合: 先頭から全部新規
+          firstNew = 0;
+        } else {
+          const idx = hist.lastIndexOf(marker);
+          // idx<0 = marker がリングバッファから押し出された (長時間 RAF 停止)。
+          // 取りこぼしは諦め、現在バッファ全体を新規扱いにして記録を継続する。
+          firstNew = idx >= 0 ? idx + 1 : 0;
         }
-        if (firstNew < hist.length) {
-          for (let i = firstNew; i < hist.length; i++) {
-            bufferRef.current.push(hist[i]);
-            lastSavedSeqRef.current = hist[i].seq;
-            totalFramesRef.current++;
-          }
+        for (let i = firstNew; i < hist.length; i++) {
+          bufferRef.current.push(hist[i]);
+          totalFramesRef.current++;
         }
+        lastFrameRef.current = hist[hist.length - 1];
       }
       rafRef.current = requestAnimationFrame(tick);
     };
@@ -143,10 +145,11 @@ export function useRecorder(historyRef: MutableRefObject<TelemetryFrame[]>) {
         )}`;
         const meta = await createSession(name || auto);
 
-        // 「今からの」記録: 現在の history の最大 seq を起点に
+        // 「今からの」記録: 現在の history 末尾フレームを起点マーカにする
+        // (seq ではなくオブジェクト同一性で追うため機体リブートに強い)
         const hist = historyRef.current;
-        lastSavedSeqRef.current =
-          hist.length > 0 ? hist[hist.length - 1].seq : -Infinity;
+        lastFrameRef.current =
+          hist.length > 0 ? hist[hist.length - 1] : null;
         bufferRef.current = [];
         totalFramesRef.current = 0;
 
@@ -223,13 +226,14 @@ export function useRecorder(historyRef: MutableRefObject<TelemetryFrame[]>) {
 
   const exportCSV = useCallback(async (id: number, name: string) => {
     const frames = await loadSessionFrames(id);
+    // firmware 17 列 (末尾 phase, accel_g) + 受信時刻 wall_ms。
     const header =
-      "seq,t_ms,dt_ms,ax,ay,az,gx,gy,gz,roll,pitch,yaw,s0,s1,s2,wall_ms\n";
+      "seq,t_ms,dt_ms,ax,ay,az,gx,gy,gz,roll,pitch,yaw,s0,s1,s2,phase,accel_g,wall_ms\n";
     // Build in chunks to avoid one huge string
     const parts: string[] = [header];
     for (const f of frames) {
       parts.push(
-        `${f.seq},${f.t_ms},${f.dt_ms},${f.ax},${f.ay},${f.az},${f.gx},${f.gy},${f.gz},${f.roll},${f.pitch},${f.yaw},${f.s0},${f.s1},${f.s2},${f.wall_ms}\n`,
+        `${f.seq},${f.t_ms},${f.dt_ms},${f.ax},${f.ay},${f.az},${f.gx},${f.gy},${f.gz},${f.roll},${f.pitch},${f.yaw},${f.s0},${f.s1},${f.s2},${f.phase ?? 0},${f.accel_g ?? ""},${f.wall_ms}\n`,
       );
     }
     const blob = new Blob(parts, { type: "text/csv;charset=utf-8" });

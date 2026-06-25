@@ -27,6 +27,7 @@ export function useWebSerial() {
   const rxCounterRef = useRef(0);
   const lastSetLatest = useRef(0);
   const lastSetRx = useRef(0);
+  const lastSetInfo = useRef(0);  // InfoLog 通知用の独立スロットル (telemetry 用と分離)
 
   // ブラウザ API ハンドル
   const portRef = useRef<any>(null);
@@ -54,38 +55,69 @@ export function useWebSerial() {
   //   欠損列はそれぞれ 0 / 計算値で埋める。
   const parseLine = useCallback((line: string) => {
     if (!line) return;
-    if (line.startsWith("[") || line.startsWith("#")) {
+    // 情報ログ ([...] / # / 旧ファームの LOG, 行)
+    if (line.startsWith("[") || line.startsWith("#") || line.startsWith("LOG,")) {
       // 情報ログとして保持し、UI 側で参照させる（最大 200 行、古いものを捨てる）
       const buf = infoLogRef.current;
       buf.push({ ts: Date.now(), line });
       if (buf.length > 200) buf.splice(0, buf.length - 200);
-      // 100ms スロットルで UI 通知（毎行 setState すると重い）
+      // 100ms スロットルで UI 通知（毎行 setState すると重い）。
+      // ※ 専用タイマ lastSetInfo を使う（telemetry 用 lastSetLatest 流用だと
+      //   テレメtrイ受信中に InfoLog がほぼ更新されないバグになる）。
       const now = performance.now();
-      if (now - lastSetLatest.current > 100) {
+      if (now - lastSetInfo.current > 100) {
+        lastSetInfo.current = now;
         setInfoLogTick((n) => n + 1);
       }
       return;
     }
-    const parts = line.split(",");
-    if (parts.length < 15) return;
-    const n = parts.map((p) => Number(p));
-    if (n.slice(0, 15).some((v) => Number.isNaN(v))) return;
 
-    const ax = n[3], ay = n[4], az = n[5];
-    const phase = parts.length >= 16 && Number.isFinite(n[15]) ? n[15] : 0;
-    const accel_g = parts.length >= 17 && Number.isFinite(n[16])
-      ? n[16]
-      : Math.sqrt(ax * ax + ay * ay + az * az);
+    let frame: TelemetryFrame | null = null;
 
-    const frame: TelemetryFrame = {
-      seq: n[0], t_ms: n[1], dt_ms: n[2],
-      ax, ay, az,
-      gx: n[6], gy: n[7], gz: n[8],
-      roll: n[9], pitch: n[10], yaw: n[11],
-      s0: n[12], s1: n[13], s2: n[14],
-      phase, accel_g,
-      wall_ms: Date.now(),
-    };
+    if (line.startsWith("DAT,")) {
+      // 旧ファーム形式 (16 トークン):
+      //   DAT,seq,t_ms,temp,ax,ay,az,gx,gy,gz,roll,pitch,yaw,servoL,servoR,servoE
+      //   servo の並びは L,R,E（LOG 行の TL/TR/TE 順に対応）。
+      //   glider_nRF52840 の TelemetryFrame は s0=右/s1=左/s2=Elev なので入れ替える。
+      const p = line.split(",");
+      if (p.length < 16) return;
+      const n = p.map((x) => Number(x));
+      // p[0]="DAT" は NaN になるので 1..15 が数値であることだけ確認する
+      if (n.slice(1, 16).some((v) => Number.isNaN(v))) return;
+      const ax = n[4], ay = n[5], az = n[6];
+      frame = {
+        seq: n[1], t_ms: n[2], dt_ms: 0,
+        ax, ay, az,
+        gx: n[7], gy: n[8], gz: n[9],
+        roll: n[10], pitch: n[11], yaw: n[12],
+        s0: n[14], s1: n[13], s2: n[15],   // R, L, E
+        phase: 0,
+        accel_g: Math.sqrt(ax * ax + ay * ay + az * az),
+        wall_ms: Date.now(),
+      };
+    } else {
+      // glider_nRF52840 形式: 15列(旧) / 17列(新, 末尾 phase, accel_g)
+      const parts = line.split(",");
+      if (parts.length < 15) return;
+      const n = parts.map((x) => Number(x));
+      if (n.slice(0, 15).some((v) => Number.isNaN(v))) return;
+
+      const ax = n[3], ay = n[4], az = n[5];
+      const phase = parts.length >= 16 && Number.isFinite(n[15]) ? n[15] : 0;
+      const accel_g = parts.length >= 17 && Number.isFinite(n[16])
+        ? n[16]
+        : Math.sqrt(ax * ax + ay * ay + az * az);
+
+      frame = {
+        seq: n[0], t_ms: n[1], dt_ms: n[2],
+        ax, ay, az,
+        gx: n[6], gy: n[7], gz: n[8],
+        roll: n[9], pitch: n[10], yaw: n[11],
+        s0: n[12], s1: n[13], s2: n[14],
+        phase, accel_g,
+        wall_ms: Date.now(),
+      };
+    }
 
     latestRef.current = frame;
     const arr = historyRef.current;

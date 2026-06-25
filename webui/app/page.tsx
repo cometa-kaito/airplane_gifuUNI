@@ -1,11 +1,9 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { useTelemetry } from "./hooks/useTelemetry";
 import { useWebSerial } from "./hooks/useWebSerial";
 import { useHeartbeat } from "./hooks/useHeartbeat";
 import { ConnectionStatus } from "./components/ConnectionStatus";
-import { ModeSelector, type SourceMode } from "./components/ModeSelector";
 import { CommandPanel } from "./components/CommandPanel";
 import { TelemetryPanel } from "./components/TelemetryPanel";
 import { AttitudeHero } from "./components/AttitudeHero";
@@ -19,17 +17,19 @@ import { RateMeter } from "./components/RateMeter";
 import { RecorderPanel } from "./components/RecorderPanel";
 import { QuickControl } from "./components/QuickControl";
 import { TrimSetupPanel } from "./components/TrimSetupPanel";
+import { ServoCalPanel } from "./components/ServoCalPanel";
 import { GainPanel } from "./components/GainPanel";
 import { useTrim } from "./hooks/useTrim";
+import { useServoCal } from "./hooks/useServoCal";
 import { SafetyPanel } from "./components/SafetyPanel";
 import { CalibrationPanel } from "./components/CalibrationPanel";
 import { LaunchPanel } from "./components/LaunchPanel";
 import { WindTunnelPanel } from "./components/WindTunnelPanel";
+import { AutoTunePanel } from "./components/AutoTunePanel";
 import { InfoLogPanel } from "./components/InfoLogPanel";
+import { FirmwarePanel } from "./components/FirmwarePanel";
 import type { TelemetryFrame } from "./hooks/useTelemetry";
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8765";
-const WS_TOKEN = process.env.NEXT_PUBLIC_WS_TOKEN ?? undefined;
 const SNAPSHOT_INTERVAL_MS = 200; // チャート再描画頻度（=5Hz）
 
 /**
@@ -69,16 +69,13 @@ function StepHeader({
 }
 
 export default function Page() {
-  // 既定は WebSerial (Python 不要、USB 直結。WebSocket に切替えたい場合はタブから)
-  const [mode, setMode] = useState<SourceMode>("webserial");
-
-  const wsHook = useTelemetry(mode === "websocket" ? WS_URL : "", WS_TOKEN);
+  // 接続は WebSerial (USB 直結) 専用。Python 不要。Chrome / Edge のみ。
+  // 旧 WebSocket 経路 (Python ground_station.py) は archive/websocket/ へ退避済み。
   const wsSerial = useWebSerial();
 
-  const active = mode === "websocket" ? wsHook : wsSerial;
-  const { status, latestRef, rxCount, history } = active;
-  const infoLog = active.infoLog;
-  const infoLogTick = active.infoLogTick;
+  const { status, latestRef, rxCount, history } = wsSerial;
+  const infoLog = wsSerial.infoLog;
+  const infoLogTick = wsSerial.infoLogTick;
 
   const [snap, setSnap] = useState<TelemetryFrame[]>([]);
   useEffect(() => {
@@ -89,25 +86,11 @@ export default function Page() {
     return () => window.clearInterval(id);
   }, [history]);
 
-  useEffect(() => {
-    if (mode === "websocket") {
-      (async () => {
-        try {
-          await wsSerial.disconnect();
-        } catch {
-          // already disconnected
-        }
-      })();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
-
-  const url = mode === "websocket" ? WS_URL : "WebSerial (USB direct)";
+  const url = "WebSerial (USB direct)";
   const attitudeRef = useMemo(() => latestRef, [latestRef]);
 
   // 接続中は ~750ms 毎に ping を送って機体の failsafe (uplink timeout) を発火させない
-  const sendCommand =
-    mode === "websocket" ? wsHook.sendCommand : wsSerial.sendCommand;
+  const sendCommand = wsSerial.sendCommand;
   const heartbeat = useHeartbeat({
     enabled: status === "open",
     intervalMs: 750,
@@ -117,6 +100,10 @@ export default function Page() {
   // サーボ中立トリム (s0/s1/s2) — TrimSetupPanel と QuickControl で共有。
   // 保存済み中立を接続時に機体へ自動同期する。
   const trim = useTrim(sendCommand, status === "open");
+
+  // サーボ物理較正 (smid/smax/smin/srev) — 可動域・中立(µs)・反転。
+  // 保存済み較正を接続時に機体へ自動同期する。
+  const servoCal = useServoCal(sendCommand, status === "open");
 
   return (
     <main className="min-h-screen">
@@ -145,15 +132,17 @@ export default function Page() {
           </div>
 
           <div className="flex items-center gap-4 flex-wrap">
-            <ModeSelector
-              mode={mode}
-              onChange={setMode}
-              webSerialSupported={wsSerial.supported}
-            />
-            <div className="h-8 w-px bg-glider-border hidden md:block" />
+            {!wsSerial.supported && (
+              <span
+                className="text-[11px] font-medium text-amber-700 bg-amber-50 ring-1 ring-amber-200 rounded px-2 py-1"
+                title="Web Serial API 未対応ブラウザの可能性"
+              >
+                ⚠ Chrome / Edge 推奨
+              </span>
+            )}
             <ConnectionStatus status={status} rxCount={rxCount} url={url} />
             <RateMeter rxCount={rxCount} />
-            {mode === "webserial" && status !== "open" && (
+            {status !== "open" && (
               <button
                 onClick={() => {
                   wsSerial.connect().catch((e) => {
@@ -165,7 +154,7 @@ export default function Page() {
                 ▶ Connect Device
               </button>
             )}
-            {mode === "webserial" && status === "open" && (
+            {status === "open" && (
               <button
                 onClick={() => void wsSerial.disconnect()}
                 className="btn-danger"
@@ -234,6 +223,19 @@ export default function Page() {
               trim={trim}
               attitudeRef={attitudeRef}
               onSend={sendCommand}
+              enabled={status === "open"}
+            />
+          </div>
+
+          {/* Step 0b: サーボ可動域較正（取付ごとに 1 回。中立 µs + 両端 µs + 反転） */}
+          <div>
+            <StepHeader
+              num={0}
+              title="Servo Calibration · 可動域 / 中立（µs エンドポイント）"
+              hint="取付で変わる実際の可動域を µs で設定。両端を超えてサーボを突き当てない（stall 防止）。取付ごとに1回"
+            />
+            <ServoCalPanel
+              servoCal={servoCal}
               enabled={status === "open"}
             />
           </div>
@@ -331,6 +333,31 @@ export default function Page() {
               enabled={status === "open"}
             />
           </details>
+
+          {/* Step 5c (代替): Full Auto Tune。風洞で PID を全自動調整。独立モード */}
+          <details className="pt-2">
+            <summary className="cursor-pointer select-none flex items-center gap-3 mb-3">
+              <span className="step-badge-alt" aria-hidden>
+                5c
+              </span>
+              <div className="leading-tight">
+                <div className="text-base font-semibold text-slate-800 tracking-tight">
+                  Full Auto Tune · PID 自動調整（Z-N 限界感度法）
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5">
+                  風洞固定で Kp を自動スイープ→Ku/Tu 検出→Ziegler-Nichols で PID を自動算出・適用。GainPanel とは独立
+                </div>
+              </div>
+              <svg className="w-4 h-4 ml-auto text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </summary>
+            <AutoTunePanel
+              attitudeRef={attitudeRef}
+              onSend={sendCommand}
+              enabled={status === "open"}
+            />
+          </details>
         </section>
 
         {/* ============================================================ */}
@@ -381,29 +408,26 @@ export default function Page() {
             <CommandPanel
               onSend={sendCommand}
               enabled={status === "open"}
-              hint={
-                mode === "websocket"
-                  ? "WebSocket: ground_station 側で 'Accept WS commands' を ON にする必要あり"
-                  : "WebSerial: USB 直結。Python 不要"
-              }
+              hint="WebSerial: USB 直結。Python 不要。地上機ペアリングは /mac /setpeer も可"
             />
             <InfoLogPanel logRef={infoLog} tick={infoLogTick} />
           </div>
         </details>
 
+        {/* ============================================================ */}
+        {/* FIRMWARE · 書き込み & 機体ペアリング (初回セットアップ)          */}
+        {/* ============================================================ */}
+        <FirmwarePanel onSend={sendCommand} enabled={status === "open"} />
+
         <footer className="pt-6 pb-8 text-xs text-slate-500 space-y-2 mt-4">
           <div className="flex flex-wrap gap-x-6 gap-y-1">
-            <span>
-              <strong className="font-medium text-slate-700">WebSocket</strong> —
-              Python ground_station.py 経由 (PyQt と並行可、複数端末で共有可)
-            </span>
             <span>
               <strong className="font-medium text-slate-700">WebSerial</strong> —
               ブラウザから USB を直接掴む (Chrome / Edge のみ、Python 不要)
             </span>
           </div>
           <div className="text-slate-400">
-            Numeric ≈60Hz · Charts 5Hz · 3D 60fps · WS reconnect with backoff
+            Numeric ≈60Hz · Charts 5Hz · 3D 60fps · USB direct (Web Serial API)
           </div>
         </footer>
       </div>
