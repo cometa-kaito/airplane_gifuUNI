@@ -29,6 +29,7 @@ import { AutoTunePanel } from "./components/AutoTunePanel";
 import { InfoLogPanel } from "./components/InfoLogPanel";
 import { OnboardingCard } from "./components/OnboardingCard";
 import { FirmwarePanel } from "./components/FirmwarePanel";
+import { StepNav } from "./components/StepNav";
 import type { TelemetryFrame } from "./hooks/useTelemetry";
 
 const SNAPSHOT_INTERVAL_MS = 200; // チャート再描画頻度（=5Hz）
@@ -167,6 +168,9 @@ export default function Page() {
         </div>
       </header>
 
+      {/* ステップ・ナビ（ヘッダ直下に sticky）。各 Step / Firmware へジャンプ */}
+      <StepNav />
+
       <div className="max-w-[1600px] mx-auto px-4 md:px-8 py-8 space-y-8">
         {/* OFFLINE 時のみ: 初訪問者向けの導入カード（接続で消える） */}
         {status !== "open" && (
@@ -183,10 +187,7 @@ export default function Page() {
         {/* ============================================================ */}
         {/* MONITOR (常時表示): 接続〜飛行中の視認用ヒーロー               */}
         {/* ============================================================ */}
-        <section
-          className="grid gap-5"
-          style={{ gridTemplateColumns: "minmax(0, 2fr) minmax(280px, 1fr)" }}
-        >
+        <section className="grid gap-5 grid-cols-1 lg:[grid-template-columns:minmax(0,2fr)_minmax(280px,1fr)]">
           <AttitudeHero attitudeRef={attitudeRef} />
           <ArtificialHorizon
             attitudeRef={attitudeRef}
@@ -226,7 +227,7 @@ export default function Page() {
           </div>
 
           {/* Step 0: サーボトリム（全モード共通の機械的 GND。最初に設定する） */}
-          <div>
+          <div id="step-trim" className="scroll-mt-28">
             <StepHeader
               num={0}
               title="Servo Trim · 機械的中立（全モード GND）"
@@ -241,7 +242,7 @@ export default function Page() {
           </div>
 
           {/* Step 0b: サーボ可動域較正（取付ごとに 1 回。中立 µs + 両端 µs + 反転） */}
-          <div>
+          <div id="step-cal" className="scroll-mt-28">
             <StepHeader
               num={0}
               title="Servo Calibration · 可動域 / 中立（µs エンドポイント）"
@@ -255,7 +256,7 @@ export default function Page() {
           </div>
 
           {/* Step 1: キャリブレーション（機体を水平面に置いた状態で実施） */}
-          <div>
+          <div id="step-calib" className="scroll-mt-28">
             <StepHeader
               num={1}
               title="Calibration · 取付角ゼロ点"
@@ -269,7 +270,7 @@ export default function Page() {
           </div>
 
           {/* Step 2: 安全装置（しきい値・failsafe） */}
-          <div>
+          <div id="step-safety" className="scroll-mt-28">
             <StepHeader
               num={2}
               title="Safety · 自動 MANUAL 復帰条件"
@@ -285,7 +286,7 @@ export default function Page() {
           </div>
 
           {/* Step 3: 手動操舵確認（MANUAL でサーボ動作・舵の効きをチェック） */}
-          <div>
+          <div id="step-manual" className="scroll-mt-28">
             <StepHeader
               num={3}
               title="Manual Check · 手動操舵確認"
@@ -299,7 +300,7 @@ export default function Page() {
           </div>
 
           {/* Step 4: PID ゲイン（地上で挙動を確認しつつ調整） */}
-          <div>
+          <div id="step-pid" className="scroll-mt-28">
             <StepHeader
               num={4}
               title="PID Gains · 3軸ゲイン + D-LPF"
@@ -309,7 +310,7 @@ export default function Page() {
           </div>
 
           {/* Step 5: 投擲検知（自律飛行モード）。最後に Arm して投げる。 */}
-          <div>
+          <div id="step-launch" className="scroll-mt-28">
             <StepHeader
               num={5}
               title="Launch · 投擲検知（自律滑空）"
@@ -324,7 +325,7 @@ export default function Page() {
           </div>
 
           {/* Step 5b (代替): 風洞試験モード。フライトでは使わない */}
-          <details className="pt-2">
+          <details id="step-windtunnel" className="pt-2 scroll-mt-28">
             <summary className="cursor-pointer select-none flex items-center gap-3 mb-3">
               <span className="step-badge-alt" aria-hidden>
                 5b
@@ -349,7 +350,7 @@ export default function Page() {
           </details>
 
           {/* Step 5c (代替): Full Auto Tune。風洞で PID を全自動調整。独立モード */}
-          <details className="pt-2">
+          <details id="step-autotune" className="pt-2 scroll-mt-28">
             <summary className="cursor-pointer select-none flex items-center gap-3 mb-3">
               <span className="step-badge-alt" aria-hidden>
                 5c
@@ -375,36 +376,46 @@ export default function Page() {
         </section>
 
         {/* ============================================================ */}
-        {/* IN-FLIGHT MONITORING / POST-FLIGHT ANALYSIS                   */}
+        {/* FIRMWARE · 入手 & 機体ペアリング (初回セットアップ)             */}
+        {/* Pre-flight の直後に配置し、初回ユーザの導線を改善。              */}
         {/* ============================================================ */}
-        <section className="space-y-5">
-          <div className="px-1">
-            <h2 className="text-xl font-semibold text-slate-800 tracking-tight">
-              In-flight / Post-flight
-            </h2>
-            <p className="text-sm text-slate-500 mt-0.5">
-              飛行中の監視と、飛行後のログ操作
-            </p>
+        <div id="step-firmware" className="scroll-mt-28">
+          <FirmwarePanel onSend={sendCommand} enabled={status === "open"} />
+        </div>
+
+        {/* ============================================================ */}
+        {/* IN-FLIGHT MONITORING / POST-FLIGHT ANALYSIS                   */}
+        {/* 縦に最も長い飛行中監視ブロックは details で折りたたみ既定。      */}
+        {/* ============================================================ */}
+        <details className="rounded-xl bg-white shadow-card ring-1 ring-slate-200/60">
+          <summary className="px-5 py-4 cursor-pointer select-none text-sm font-medium text-slate-600 hover:text-slate-800 transition-colors">
+            <span className="inline-flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+              In-flight / Post-flight · 監視とログ（3D・チャート・記録）
+            </span>
+          </summary>
+          <div className="px-5 pb-5 pt-1 space-y-5">
+            {/* 3D + チャート群 (飛行中の視認・解析用) */}
+            <section className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+              <div className="lg:col-span-6">
+                <Glider3D attitudeRef={attitudeRef} />
+              </div>
+              <div className="lg:col-span-6 grid grid-cols-1 gap-4">
+                <AttitudeChart data={snap} />
+                <ServoChart data={snap} />
+                <AccelChart data={snap} />
+              </div>
+            </section>
+
+            {/* 詳細テレメトリ (IMU & system) */}
+            <TelemetryPanel attitudeRef={attitudeRef} />
+
+            {/* 記録: 保存 / 一覧 / 書き出し / 削除 */}
+            <RecorderPanel historyRef={history} liveOK={status === "open"} />
           </div>
-
-          {/* 3D + チャート群 (飛行中の視認・解析用) */}
-          <section className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-            <div className="lg:col-span-6">
-              <Glider3D attitudeRef={attitudeRef} />
-            </div>
-            <div className="lg:col-span-6 grid grid-cols-1 gap-4">
-              <AttitudeChart data={snap} />
-              <ServoChart data={snap} />
-              <AccelChart data={snap} />
-            </div>
-          </section>
-
-          {/* 詳細テレメトリ (IMU & system) */}
-          <TelemetryPanel attitudeRef={attitudeRef} />
-
-          {/* 記録: 保存 / 一覧 / 書き出し / 削除 */}
-          <RecorderPanel historyRef={history} liveOK={status === "open"} />
-        </section>
+        </details>
 
         {/* ============================================================ */}
         {/* ADVANCED · 生コマンド + デバイスログ (Test/デバッグ用)         */}
@@ -427,11 +438,6 @@ export default function Page() {
             <InfoLogPanel logRef={infoLog} tick={infoLogTick} />
           </div>
         </details>
-
-        {/* ============================================================ */}
-        {/* FIRMWARE · 書き込み & 機体ペアリング (初回セットアップ)          */}
-        {/* ============================================================ */}
-        <FirmwarePanel onSend={sendCommand} enabled={status === "open"} />
 
         <footer className="pt-6 pb-8 text-xs text-slate-500 space-y-2 mt-4">
           <div className="flex flex-wrap gap-x-6 gap-y-1">
