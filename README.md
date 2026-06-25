@@ -1,35 +1,39 @@
 # 自律滑空機 自作プログラム集
 
-岐阜大学 機械工学概論II「自律滑空機」プロジェクト用に作成した、機体制御プログラム・地上ビューア・ドキュメント一式です。
+岐阜大学 機械工学概論II「自律滑空機」プロジェクト用に作成した、機体制御プログラム・地上 UI・ドキュメント一式です。
+機体（nRF52840）で姿勢推定（Madgwick）＋3軸 PID 制御を行い、ESP-NOW 無線で地上 PC と接続。
+ブラウザ（**WebSerial**）から設定・チューニング・監視ができます。
+
+🌐 **Web UI（公開・インストール不要）**: <https://webui-self.vercel.app>
+　Chrome / Edge で開き、地上機を USB 接続して使用します（Python 等のサーバ不要）。
+
+📦 **ファーム**は本リポジトリ `arduino/` を `git clone` または GitHub の **Code → Download ZIP** で入手。
 
 ## ディレクトリ構成
 
 ```
 自作/
 ├── README.md                              ← このファイル（全体案内）
-├── arduino/
-│   ├── glider_nRF52840/                   nRF52840 Sense（機体制御）
-│   │   └── glider_nRF52840.ino
-│   ├── glider_ESP32C3_aircraft/           機体側 ESP32-C3（無線中継）
-│   │   ├── glider_ESP32C3_aircraft.ino
-│   │   ├── espnow_uart_bridge.h/.cpp
-│   │   └── uart_line_protocol.h/.cpp
-│   └── glider_ESP32C3_ground/             地上側 ESP32-C3（無線中継）
-│       ├── glider_ESP32C3_ground.ino
-│       ├── espnow_uart_bridge.h/.cpp
-│       └── uart_line_protocol.h/.cpp
-├── python_viewer/
+├── arduino/                               ファーム（Arduino スケッチ 3 種）
+│   ├── glider_nRF52840/                   nRF52840 Sense（機体制御: IMU + PID + サーボ）
+│   ├── glider_ESP32C3_aircraft/           機体側 ESP32-C3（ESP-NOW ↔ UART）
+│   └── glider_ESP32C3_ground/             地上側 ESP32-C3（USB ↔ ESP-NOW）
+│       （各 ESP32: espnow_uart_bridge / uart_line_protocol / secrets.example.h）
+├── webui/                                 Web UI（Next.js + Tailwind + R3F）。WebSerial 専用。本番は Vercel
+├── python_viewer/                         PyQt 3D ビューア等（任意・オフライン解析）
 │   ├── glider_viewer3d.py                 高機能 3D ビューア（HUD・ミニグラフ付）
 │   ├── glider_templates.py                機体形状テンプレート集
 │   ├── paperplane_glider.py               シンプル 3D 紙飛行機ビューア
-│   ├── viewer_serialsend.py               標準 2D ビューア（公式版コピー）
-│   ├── requirements.txt                   Python 依存パッケージ
-│   └── PROTOCOL_original.md               公式プロトコル仕様
+│   ├── viewer_serialsend.py               標準 2D ビューア
+│   └── requirements.txt / PROTOCOL_original.md
+├── sim/                                   オートチューンの数値シミュレーション検証
+├── archive/websocket/                     旧 WebSocket 経路（ground_station.py 等を退避）
 └── docs/
     ├── HARDWARE_MAC.md                    MAC アドレス・ハードウェア構成
     ├── WIRING.md                          配線ガイド
     ├── COMMANDS.md                        無線コマンド一覧
-    └── SETUP.md                           環境構築手順
+    ├── SETUP.md                           環境構築手順
+    └── CONTROL_STRATEGY_REPORT.md         制御方針レポート
 ```
 
 ## 全体システム構成
@@ -58,29 +62,28 @@
 両 ESP32-C3 をシリアルモニタに繋ぎ、`/mac` で MAC を確認。  
 それぞれで `/setpeer XX:XX:XX:XX:XX:XX`（相手の MAC）を打つと NVS に保存され自動再起動する。
 
-### 3. Python 地上局を起動
+### 3. Web UI を開いて操作（WebSerial）
+
+ブラウザ（**Chrome / Edge**）から操作します。Python 等のサーバは不要です。
+
+- 公開版（インストール不要）: <https://webui-self.vercel.app>
+- ローカルで動かす場合:
+  ```powershell
+  cd webui
+  npm install
+  npm run dev      # http://localhost:3000 （WebSerial は localhost でも動作）
+  ```
+
+地上機を USB 接続して **▶ Connect Device** → 画面を上から順に設定します。
+
+### 4.（任意）オフライン解析: PyQt 3D ビューア
 ```powershell
-# 仮想環境を有効化（初回のみ作成、詳細は docs/SETUP.md）
-.\.venv\Scripts\activate
-
-# 地上局（PyQt UI + 3D ペイン + WebSocket サーバ。WebUI からの操作も可能）
-python python_viewer\ground_station.py --port COM12
-
-# 3D ビューア単独版（テレメトリ閲覧のみ）
-python python_viewer\glider_viewer3d.py --port COM12 --preset default
-
-# 標準 2D ビューア（生データ可視化）
-python python_viewer\viewer_serialsend.py --port COM12
+.\.venv\Scripts\activate          # 初回のみ作成（docs/SETUP.md）
+python python_viewer\glider_viewer3d.py --port COM12 --preset default   # 3D ビューア
+python python_viewer\viewer_serialsend.py --port COM12                  # 標準 2D ビューア
 ```
-
-### 4. （任意）WebUI を立ち上げる
-```powershell
-cd webui
-npm install
-npm run dev
-# ブラウザで http://localhost:3000
-```
-WebSocket モードでコマンド操作したい場合は ground_station 側で **「Accept WS commands」** チェックボックスを ON にする。
+> 旧 WebSocket 経路（`ground_station.py` による「PyQt + WebSocket サーバ」運用）は、Web UI の
+> WebSerial 専用化に伴い `archive/websocket/` へ退避しました。復元手順は同フォルダの README を参照。
 
 ## 詳細ドキュメント
 
@@ -93,15 +96,19 @@ WebSocket モードでコマンド操作したい場合は ground_station 側で
 
 ## 飛行までの操作フロー（Pre-flight Workflow）
 
-WebUI / Python 地上局のいずれも、**上から順に触る** ように UI が並んでいます:
+Web UI は **上から順に触る** ように UI が並んでいます:
 
 ```
-Step 0  Connect            USB or WebSocket でデバイス接続
-Step 1  Calibration        機体を水平に置いて Zero Now
-Step 2  Safety             姿勢角しきい値 + Failsafe を設定
-Step 3  Trim & Mode        D-Pad / 矢印キーで MANUAL トリム調整
-Step 4  PID Gains          Soft / Default / Responsive プリセット or 個別調整
-Step 5  Launch             Phase Machine を Arm → 機体を投げる
+Connect              Chrome / Edge で地上機を USB 接続（▶ Connect Device）
+Step 0   Servo Trim         全モード共通の機械的中立（度）
+Step 0b  Servo Cal          可動域 min/center/max（µs）をドラッグ＋ライブジョグで較正
+Step 1   Calibration        機体を水平に置いて Zero Now
+Step 2   Safety             姿勢角しきい値 + Failsafe を設定
+Step 3   Manual Check       MANUAL で D-Pad / 矢印キーで舵の効きを確認
+Step 4   PID Gains          プリセット or 個別調整（D 項 LPF 含む）
+Step 5   Launch             Phase Machine を Arm → 機体を投げる
+Step 5b  Wind Tunnel        風洞でステップ応答測定（代替）
+Step 5c  Full Auto Tune     Ziegler-Nichols 限界感度法で PID を自動算出・適用
 ```
 
 ### Flight Phase Machine (Step 5)

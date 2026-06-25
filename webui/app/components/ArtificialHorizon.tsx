@@ -116,7 +116,7 @@ export function ArtificialHorizon({
       <div className="absolute top-3 left-3 z-10 section-title">Artificial Horizon</div>
 
       <svg
-        viewBox="-100 -100 200 220"
+        viewBox="-100 -100 200 240"
         className="w-full h-full block"
         preserveAspectRatio="xMidYMid meet"
       >

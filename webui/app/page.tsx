@@ -27,6 +27,7 @@ import { LaunchPanel } from "./components/LaunchPanel";
 import { WindTunnelPanel } from "./components/WindTunnelPanel";
 import { AutoTunePanel } from "./components/AutoTunePanel";
 import { InfoLogPanel } from "./components/InfoLogPanel";
+import { OnboardingCard } from "./components/OnboardingCard";
 import { FirmwarePanel } from "./components/FirmwarePanel";
 import type { TelemetryFrame } from "./hooks/useTelemetry";
 
@@ -167,6 +168,18 @@ export default function Page() {
       </header>
 
       <div className="max-w-[1600px] mx-auto px-4 md:px-8 py-8 space-y-8">
+        {/* OFFLINE 時のみ: 初訪問者向けの導入カード（接続で消える） */}
+        {status !== "open" && (
+          <OnboardingCard
+            onConnect={() => {
+              wsSerial.connect().catch((e) => {
+                alert(`接続失敗: ${e?.message ?? e}`);
+              });
+            }}
+            supported={wsSerial.supported}
+          />
+        )}
+
         {/* ============================================================ */}
         {/* MONITOR (常時表示): 接続〜飛行中の視認用ヒーロー               */}
         {/* ============================================================ */}
@@ -396,7 +409,7 @@ export default function Page() {
         {/* ============================================================ */}
         {/* ADVANCED · 生コマンド + デバイスログ (Test/デバッグ用)         */}
         {/* ============================================================ */}
-        <details className="rounded-xl bg-white shadow-card ring-1 ring-slate-200/60" open>
+        <details className="rounded-xl bg-white shadow-card ring-1 ring-slate-200/60">
           <summary className="px-5 py-4 cursor-pointer select-none text-sm font-medium text-slate-600 hover:text-slate-800 transition-colors">
             <span className="inline-flex items-center gap-2">
               <svg className="w-4 h-4 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
