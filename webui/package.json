@@ -7,8 +7,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
-    "build:firmware": "python scripts/build-firmware-zip.py"
+    "lint": "next lint"
   },
   "dependencies": {
     "@react-three/drei": "^9.114.3",
