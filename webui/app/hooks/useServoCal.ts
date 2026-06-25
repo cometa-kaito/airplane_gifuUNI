@@ -83,6 +83,12 @@ export type ServoCalApi = {
   resetAll: () => void;
   /** 保存済み較正値をもう一度すべて機体へ送信する。 */
   resend: () => void;
+  /** 較正ジョグ: 指定 ch を生 µs で直接駆動（DISARMED 時のみ機体側で有効）。永続化しない。 */
+  jog: (idx: 0 | 1 | 2, us: number) => void;
+  /** 較正ジョグ解除（1 ch）。 */
+  jogOff: (idx: 0 | 1 | 2) => void;
+  /** 較正ジョグ解除（全 ch）。パネル離脱・切断時に呼ぶ。 */
+  jogOffAll: () => void;
 };
 
 const FIELD_CMD: Record<ServoCalField, "smin" | "smid" | "smax"> = {
@@ -231,5 +237,37 @@ export function useServoCal(
     })();
   }, [sendChannel]);
 
-  return { cal, hydrated, setField, setReverse, resetAll, resend };
+  // ---- 較正ジョグ (sjog) ----
+  //   機体側は DISARMED 時のみ生 µs で直接駆動。較正値(localStorage)は変更しない。
+  const jog = useCallback(
+    (idx: 0 | 1 | 2, us: number) => {
+      if (!enabledRef.current) return;
+      onSend(`sjog ${idx} ${Math.round(clampUs(us))}`).catch(() => {});
+    },
+    [onSend],
+  );
+
+  const jogOff = useCallback(
+    (idx: 0 | 1 | 2) => {
+      if (!enabledRef.current) return;
+      onSend(`sjog ${idx} off`).catch(() => {});
+    },
+    [onSend],
+  );
+
+  const jogOffAll = useCallback(() => {
+    if (!enabledRef.current) return;
+    (async () => {
+      for (let i = 0; i < 3; i++) {
+        try {
+          await onSend(`sjog ${i} off`);
+          await new Promise((r) => setTimeout(r, 12));
+        } catch {
+          return;
+        }
+      }
+    })();
+  }, [onSend]);
+
+  return { cal, hydrated, setField, setReverse, resetAll, resend, jog, jogOff, jogOffAll };
 }

@@ -236,6 +236,7 @@ export default function Page() {
             />
             <ServoCalPanel
               servoCal={servoCal}
+              attitudeRef={attitudeRef}
               enabled={status === "open"}
             />
           </div>

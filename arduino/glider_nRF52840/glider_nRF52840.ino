@@ -40,6 +40,8 @@
 //    kd <axis> <value>
 //    target <axis> <value>
 //    s0 <deg> / s1 <deg> / s2 <deg>   (各サーボの trim、-90..+90)
+//    smid/smax/smin <ch> <us>         (サーボ較正: 中立/＋端/−端、µs)
+//    srev <ch> <0|1>                  (サーボ出力反転、取付向き補正)
 //    status / help / tlm on / tlm off
 //    failsafe <ms>      アップリンク途絶でフェイルセーフ発動するまでの ms (0 で無効)
 //    arm / disarm       投擲検知の有効化 / 解除（自律滑空モード）
@@ -107,6 +109,35 @@ float trimDeg[3] = {0.0f, 0.0f, 0.0f};
 //   左エルロンの位相反転（標準は反転 = -1.0）。物理取付の都合で逆相にしたい場合に変更
 float aileronMixL = -1.0f;
 float aileronMixR = +1.0f;
+
+// ---- 物理サーボ較正（subtrim + エンドポイント, µs） ----
+//   旧実装は「論理舵角 ±90° → 0..180° → servo.write()」と固定変換していたが、
+//   実際の可動域・中立・左右(上下)非対称はサーボホーン長/リンケージ/取付向きで
+//   決まり、固定 ±90 では表現できない（突き当たり stall / 可動不足の原因）。
+//   そこでサーボごとに次の3点を µs で持ち、制御出力(論理角 ±90°)を写像する:
+//       servoCenterUs[i] : 中立(subtrim)。論理 0° のパルス幅。
+//       servoMaxUs[i]    : 論理 +90° 側の機械端。
+//       servoMinUs[i]    : 論理 -90° 側の機械端。
+//   center→max と center→min で傾きが別なので「左右/上下で異なる可動域」を表現でき、
+//   最終パルスは [min,max] でクランプして機械端の突き当たりを防ぐ。
+//   servoReverse[i] : 取付向きの出力反転。既定は従来コードと同一
+//                     (D0 右エルロン=反転 / D1 左エルロン=正転 / D2 エレベータ=反転)。
+//   いずれも RAM のみ保持（電源 OFF で消える）。WebUI/地上局が接続時に再送する。
+const int SERVO_US_ABS_MIN = 500;    // 設定として許す絶対下限
+const int SERVO_US_ABS_MAX = 2500;   // 設定として許す絶対上限
+int  servoMinUs[3]    = {1000, 1000, 1000};
+int  servoCenterUs[3] = {1500, 1500, 1500};
+int  servoMaxUs[3]    = {2000, 2000, 2000};
+bool servoReverse[3]  = {true, false, true};
+
+// ---- サーボ・ジョグ (エンドポイント較正の実位置確認用) ----
+//   DISARMED(地上)時のみ、WebUI から `sjog <ch> <us>` で該当chを生µsで直接駆動する。
+//   制御ループ最終段のサーボ出力をこの値で上書き(度数/reverse/PID を経由しない)。
+//   `sjog <ch> off` / arm / disarm / failsafe / 無操作タイムアウト で自動解除する。
+int      servoJogUs[3] = {-1, -1, -1};            // >=0 のとき有効 (生µs)
+uint32_t servoJogMs = 0;                          // 最終 jog 指令時刻
+const uint32_t SERVO_JOG_TIMEOUT_MS = 12000;      // 無操作自動解除 [ms]
+static inline void clearServoJog() { servoJogUs[0] = servoJogUs[1] = servoJogUs[2] = -1; }
 
 float integralE[3] = {0, 0, 0};
 float prevE[3] = {0, 0, 0};
@@ -266,6 +297,23 @@ static float clipf(float v, float lo, float hi) {
   return v;
 }
 
+// 論理舵角 (deg, 中立=0) → サーボパルス幅 (µs)。
+//   center を 0°、+90°→max、-90°→min に「左右別の傾き」で線形写像する
+//   (= 非対称な可動域を表現)。最終パルスは設定した両端で必ずクランプし、
+//   リンケージが機械端に突き当たってサーボが stall するのを防ぐ。
+static int servoLogicalToUs(int ch, float logicalDeg) {
+  logicalDeg = clipf(logicalDeg, -90.0f, 90.0f);
+  float us;
+  if (logicalDeg >= 0.0f)
+    us = servoCenterUs[ch] + (logicalDeg / 90.0f) * (float)(servoMaxUs[ch] - servoCenterUs[ch]);
+  else
+    us = servoCenterUs[ch] + (logicalDeg / 90.0f) * (float)(servoCenterUs[ch] - servoMinUs[ch]);
+  // min/max の大小が逆でも安全なように両端を整列してからクランプ
+  int lo = servoMinUs[ch] < servoMaxUs[ch] ? servoMinUs[ch] : servoMaxUs[ch];
+  int hi = servoMinUs[ch] < servoMaxUs[ch] ? servoMaxUs[ch] : servoMinUs[ch];
+  return (int)lroundf(clipf(us, (float)lo, (float)hi));
+}
+
 // =============================================================
 //  Flight phase machine — transition helper
 // =============================================================
@@ -289,6 +337,7 @@ static void phaseTransition(FlightPhase newPhase) {
     dFilt[i] = 0.0f;
     prevE[i] = 0.0f;
   }
+  clearServoJog();  // フェーズが変わったら較正ジョグは必ず解除（飛行中に保持しない）
 
   switch (newPhase) {
     case PHASE_DISARMED:
@@ -399,6 +448,13 @@ static void printStatus() {
     "[STATUS] climb_ff_elev=%.1f d_source=%s landed=manual",
     climbElevatorFF, dSource == DSRC_GYRO ? "GYRO" : "ERROR");
   radioPrintln(buf);
+  // サーボ較正 (subtrim + エンドポイント, µs)。ch 0=右エルロン/1=左エルロン/2=エレベータ
+  for (int i = 0; i < 3; i++) {
+    snprintf(buf, sizeof(buf),
+      "[STATUS] servo%d min=%d mid=%d max=%d rev=%d",
+      i, servoMinUs[i], servoCenterUs[i], servoMaxUs[i], servoReverse[i] ? 1 : 0);
+    radioPrintln(buf);
+  }
 }
 
 static void printHelp() {
@@ -416,6 +472,13 @@ static void printHelp() {
   radioPrintln("[INFO]   s0 <v>  (D0 right aileron)");
   radioPrintln("[INFO]   s1 <v>  (D1 left  aileron)");
   radioPrintln("[INFO]   s2 <v>  (D2 elevator)");
+  radioPrintln("[INFO] Servo calibration (subtrim + endpoints, us):");
+  radioPrintln("[INFO]   smid <ch 0..2> <us>   neutral/subtrim pulse (logical 0deg)");
+  radioPrintln("[INFO]   smax <ch 0..2> <us>   endpoint at logical +90deg");
+  radioPrintln("[INFO]   smin <ch 0..2> <us>   endpoint at logical -90deg");
+  radioPrintln("[INFO]   srev <ch 0..2> <0|1>  output reverse (mounting)");
+  radioPrintln("[INFO]   sjog <ch 0..2> <us|off>  jog servo to raw us (DISARMED only, for calibration)");
+  radioPrintln("[INFO]   (ch: 0=R aileron / 1=L aileron / 2=elevator, us 500..2500)");
   radioPrintln("[INFO] Other:");
   radioPrintln("[INFO]   status / help / tlm on / tlm off");
   radioPrintln("[INFO]   ping               heartbeat (silent, keeps uplink alive)");
@@ -722,6 +785,81 @@ static void handleCommandLine(char* line) {
     return;
   }
 
+  // ---- 物理サーボ較正 (subtrim + エンドポイント, µs) ----
+  //   smin/smid/smax <ch 0..2> <us>  : 各サーボの 下端/中立/上端 パルス幅
+  //   srev <ch 0..2> <0|1>           : 出力反転 (取付向き)
+  //   ch: 0=右エルロン(D0) / 1=左エルロン(D1) / 2=エレベータ(D2)
+  if (iequals(cmd, "smin") || iequals(cmd, "smid") || iequals(cmd, "smax")) {
+    char* chTok  = nextToken(p);
+    char* valTok = nextToken(p);
+    float chF, vF;
+    if (!chTok || !parseFloat(chTok, &chF) || chF < 0 || chF > 2
+        || !valTok || !parseFloat(valTok, &vF)) {
+      radioPrintln("[INFO] usage: smin|smid|smax <ch 0..2> <us 500..2500>");
+      return;
+    }
+    int ch = (int)chF;
+    int us = (int)clipf(vF, (float)SERVO_US_ABS_MIN, (float)SERVO_US_ABS_MAX);
+    if (iequals(cmd, "smin"))      servoMinUs[ch]    = us;
+    else if (iequals(cmd, "smid")) servoCenterUs[ch] = us;
+    else                            servoMaxUs[ch]    = us;
+    char buf[80];
+    snprintf(buf, sizeof(buf), "[PARAM] %s ch=%d us=%d", cmd, ch, us);
+    radioPrintln(buf);
+    return;
+  }
+  if (iequals(cmd, "srev")) {
+    char* chTok  = nextToken(p);
+    char* valTok = nextToken(p);
+    float chF, vF;
+    if (!chTok || !parseFloat(chTok, &chF) || chF < 0 || chF > 2
+        || !valTok || !parseFloat(valTok, &vF)) {
+      radioPrintln("[INFO] usage: srev <ch 0..2> <0|1>");
+      return;
+    }
+    int ch = (int)chF;
+    servoReverse[ch] = (vF != 0.0f);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "[PARAM] srev ch=%d rev=%d", ch, servoReverse[ch] ? 1 : 0);
+    radioPrintln(buf);
+    return;
+  }
+
+  // ---- サーボ・ジョグ (エンドポイント較正用): DISARMED 時のみ生µsで直接駆動 ----
+  //   `sjog <ch 0..2> <us 500..2500|off>`。MANUAL に落としつつ最終出力を上書きする。
+  //   WebUI のドラッグ/「端へ」テストで、舵を実際に動かして可動域を確認するために使う。
+  if (iequals(cmd, "sjog")) {
+    char* chTok  = nextToken(p);
+    char* valTok = nextToken(p);
+    float chF;
+    if (!chTok || !parseFloat(chTok, &chF) || chF < 0 || chF > 2 || !valTok) {
+      radioPrintln("[INFO] usage: sjog <ch 0..2> <us 500..2500|off>");
+      return;
+    }
+    if (phase != PHASE_DISARMED) {
+      radioPrintln("[INFO] sjog: DISARMED 時のみ可 (先に disarm/land)");
+      return;
+    }
+    int ch = (int)chF;
+    char buf[48];
+    if (iequals(valTok, "off")) {
+      servoJogUs[ch] = -1;
+      snprintf(buf, sizeof(buf), "[PARAM] sjog ch=%d off", ch);
+    } else {
+      float v;
+      if (!parseFloat(valTok, &v)) {
+        radioPrintln("[INFO] usage: sjog <ch 0..2> <us 500..2500|off>");
+        return;
+      }
+      baseMode = MODE_MANUAL;  // 較正中は PID を止める（出力は jog で上書き）
+      servoJogUs[ch] = (int)clipf(v, (float)SERVO_US_ABS_MIN, (float)SERVO_US_ABS_MAX);
+      servoJogMs = millis();
+      snprintf(buf, sizeof(buf), "[PARAM] sjog ch=%d us=%d", ch, servoJogUs[ch]);
+    }
+    radioPrintln(buf);
+    return;
+  }
+
   radioPrintln("[INFO] unknown command (type 'help')");
 }
 
@@ -770,12 +908,14 @@ void setup() {
   wdtBegin();
   wdtKick();
 
-  servo[0].attach(SERVO_PIN_0);
-  servo[1].attach(SERVO_PIN_1);
-  servo[2].attach(SERVO_PIN_2);
-  servo[0].write(90);
-  servo[1].write(90);
-  servo[2].write(90);
+  // attach は µs 出力できるよう広めの可動域 (ABS_MIN..ABS_MAX) で確保する。
+  // 実際の駆動範囲は servoMinUs/MaxUs（較正値）で制限される。
+  servo[0].attach(SERVO_PIN_0, SERVO_US_ABS_MIN, SERVO_US_ABS_MAX);
+  servo[1].attach(SERVO_PIN_1, SERVO_US_ABS_MIN, SERVO_US_ABS_MAX);
+  servo[2].attach(SERVO_PIN_2, SERVO_US_ABS_MIN, SERVO_US_ABS_MAX);
+  servo[0].writeMicroseconds(servoCenterUs[0]);
+  servo[1].writeMicroseconds(servoCenterUs[1]);
+  servo[2].writeMicroseconds(servoCenterUs[2]);
 
   IMU.settings.gyroRange = 2000;
   IMU.settings.accelRange = 4;
@@ -817,6 +957,13 @@ void loop() {
   wdtKick();
   pollSerialCommands();
 
+  // サーボ jog の無操作自動解除 (端で stall を残さない安全装置)
+  if ((servoJogUs[0] >= 0 || servoJogUs[1] >= 0 || servoJogUs[2] >= 0)
+      && (uint32_t)(millis() - servoJogMs) > SERVO_JOG_TIMEOUT_MS) {
+    clearServoJog();
+    radioPrintln("[INFO] sjog auto-released (timeout)");
+  }
+
   // ---- フェイルセーフ判定 ----
   //   PHASE_DISARMED （= 地上テスト中、つまり通常の地上局運用）でのみ有効。
   //   PRELAUNCH/LAUNCH/GLIDE/LANDED/WINDTUNNEL 中は地上局通信が無くても運用を継続
@@ -829,6 +976,7 @@ void loop() {
       // trim を中立に戻し、I 項もクリアして次の手動操作で滑らかに復帰
       trimDeg[0] = trimDeg[1] = trimDeg[2] = 0.0f;
       for (int i = 0; i < 3; i++) integralE[i] = 0.0f;
+      clearServoJog();  // アップリンク途絶時は較正ジョグも解除（端で stall させない）
       radioPrintln("[FAILSAFE] uplink lost -> MANUAL + trim=0");
     }
   }
@@ -969,7 +1117,10 @@ void loop() {
   for (int i = 0; i < 3; i++) {
     float e = effectiveTarget[i] - Q[i];
 
-    if (baseMode == MODE_AUTO && autoSub == SUB_PID) {
+    // LAUNCH grace 中は PID 出力ゼロホールド（後段で u[i]=0）。ここで積分も
+    // 進めてしまうと anti-windup も効かないまま I 項が溜まり、grace 明けに
+    // エレベータ/エルロンへ段差として一気に乗る。grace 中は 0 ホールドする。
+    if (baseMode == MODE_AUTO && autoSub == SUB_PID && !inLaunchGrace) {
       integralE[i] += e * dt;
       integralE[i] = clipf(integralE[i], -integralLimit, integralLimit);
     } else {
@@ -1029,24 +1180,36 @@ void loop() {
   angle_L = clipf(angle_L, -90.0f, 90.0f);
   angle_E = clipf(angle_E, -90.0f, 90.0f);
 
-  int servoAngle[3];
-  servoAngle[0] = (int)lroundf(angle_R + 90.0f);
-  servoAngle[1] = (int)lroundf(angle_L + 90.0f);
-  servoAngle[2] = (int)lroundf(angle_E + 90.0f);
+  // 論理舵角（中立=0）。servoReverse[] で取付向きの出力反転を吸収。
+  //   2026-06-19: エルロン2舵 + エレベータの出力方向を反転（既定 reverse[]={R,_,E}）。
+  float logical[3];
+  logical[0] = servoReverse[0] ? -angle_R : angle_R;  // D0: 右エルロン
+  logical[1] = servoReverse[1] ? -angle_L : angle_L;  // D1: 左エルロン
+  logical[2] = servoReverse[2] ? -angle_E : angle_E;  // D2: エレベータ
 
-  // 値に変化がある時だけ servo.write() を呼ぶ。
+  // ---- 実出力: サーボ較正(center/min/max µs)で論理角をパルス幅へ写像 ----
+  // 値に変化がある時だけ writeMicroseconds() を呼ぶ。
   // 理由: mbed-enabled nRF52840 の Servo ライブラリは内部で PwmOut::pulsewidth_us
-  // を呼ぶが、毎回タイマー値を更新する実装になっており、同じ値の write でも
-  // PWM パルス幅に µs オーダの微小ジッタが乗る。これがサーボ「ぴくぴく」の主因。
-  // MANUAL モードで trim 一定なら servoAngle は決定的なので 1度書けば十分。
+  // を呼ぶが、毎回タイマー値を更新する実装になっており、同じ値でも PWM パルス幅に
+  // µs オーダの微小ジッタが乗る。これがサーボ「ぴくぴく」の主因。
+  // MANUAL モードで trim 一定なら出力 µs は決定的なので 1度書けば十分。
   // PWM ハードウェアは値を保持し続けるため、書かなくても出力は維持される。
-  static int lastServoAngle[3] = {-1, -1, -1};  // 初回必ず書くため -1
+  static int lastServoUs[3] = {-1, -1, -1};  // 初回必ず書くため -1
   for (int i = 0; i < 3; i++) {
-    servoAngle[i] = (int)clipf((float)servoAngle[i], 0.0f, 180.0f);
-    if (servoAngle[i] != lastServoAngle[i]) {
-      servo[i].write(servoAngle[i]);
-      lastServoAngle[i] = servoAngle[i];
+    // 較正ジョグ中(servoJogUs>=0)は生µsで直接駆動。それ以外は通常の論理角→µs写像。
+    int us = (servoJogUs[i] >= 0) ? servoJogUs[i] : servoLogicalToUs(i, logical[i]);
+    if (us != lastServoUs[i]) {
+      servo[i].writeMicroseconds(us);
+      lastServoUs[i] = us;
     }
+  }
+
+  // テレメトリ用の servo 値は従来の 0..180 表現（90=中立）を維持し、既存ビューア
+  // (ServoBars / TrimSetupPanel / Python viewer 等) との後方互換を保つ。
+  // = 旧式 servoAngle[i] = logical[i] + 90。実出力 µs とは独立した「表示用の論理角」。
+  int servoAngle[3];
+  for (int i = 0; i < 3; i++) {
+    servoAngle[i] = (int)clipf(lroundf(logical[i] + 90.0f), 0.0f, 180.0f);
   }
 
   // telemetry (17-field CSV)
