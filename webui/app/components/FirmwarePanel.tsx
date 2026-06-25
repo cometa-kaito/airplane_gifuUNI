@@ -48,7 +48,8 @@ export function FirmwarePanel({
             ⬇ ファーム一式をダウンロード (.zip)
           </a>
           <span className="text-[11px] text-slate-500">
-            3 スケッチ（地上機 / 機体 ESP32-C3 / nRF52840）＋ secrets.example.h を含む
+            arduino フォルダ一式（地上機 / 機体 ESP32-C3 / nRF52840 の 3 スケッチ＋共通ファイル）。
+            <strong>secrets.h（鍵）は除外</strong>・secrets.example.h は同梱
           </span>
         </div>
 
