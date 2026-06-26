@@ -137,7 +137,9 @@ bool servoReverse[3]  = {true, false, true};
 int      servoJogUs[3] = {-1, -1, -1};            // >=0 のとき有効 (生µs)
 uint32_t servoJogMs = 0;                          // 最終 jog 指令時刻
 const uint32_t SERVO_JOG_TIMEOUT_MS = 12000;      // 無操作自動解除 [ms]
-static inline void clearServoJog() { servoJogUs[0] = servoJogUs[1] = servoJogUs[2] = -1; }
+// ※ clearServoJog() の定義は FlightPhase enum より後ろ（下方）に置くこと。
+//   enum より前に関数定義があると、Arduino の自動プロトタイプ生成が FlightPhase 宣言より
+//   前に挿入され、phaseTransition(FlightPhase) が "FlightPhase not declared" でコンパイル失敗する。
 
 float integralE[3] = {0, 0, 0};
 float prevE[3] = {0, 0, 0};
@@ -212,6 +214,10 @@ enum FlightPhase {
 };
 FlightPhase phase = PHASE_DISARMED;
 uint32_t phaseStartMs = 0;
+
+// 較正ジョグの解除（servoJogUs を無効化）。定義は FlightPhase enum より後ろに置く必要がある
+// （上の servoJogUs 付近の注記参照: Arduino 自動プロトタイプ生成順の都合）。
+static inline void clearServoJog() { servoJogUs[0] = servoJogUs[1] = servoJogUs[2] = -1; }
 
 float launchAccelG = 2.5f;                  // 投擲判定しきい値 [g]
 uint32_t climbMs = 1500;                    // LAUNCH 持続時間 [ms]
