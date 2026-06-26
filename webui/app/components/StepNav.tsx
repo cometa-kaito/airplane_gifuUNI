@@ -31,9 +31,11 @@ export function StepNav() {
   const jump = (id: string) => {
     const el = document.getElementById(id);
     if (!el) return;
-    // details 内（風洞 / AutoTune）は閉じていると scrollIntoView が無効なので開く
-    const host = el.closest("details");
-    if (host && !host.open) host.open = true;
+    // 閉じた <details> 内は scrollIntoView が効かないので、関連する details を開く。
+    //  - 祖先方向: id が details 自身に付くケース（風洞 / AutoTune）
+    //  - 子孫方向: id が details を包む親 <div> に付くケース（Firmware）
+    const host = el.closest("details") ?? el.querySelector("details");
+    if (host instanceof HTMLDetailsElement && !host.open) host.open = true;
     el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
