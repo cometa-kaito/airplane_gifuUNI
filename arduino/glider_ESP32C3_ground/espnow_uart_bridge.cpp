@@ -22,6 +22,7 @@ static uint32_t g_bad_frames = 0;
 static uint32_t g_sent_lines = 0;
 static uint32_t g_recv_lines = 0;
 static uint32_t g_replay_drops = 0;
+static uint32_t g_foreign_drops = 0;   // 送信元 MAC がペア相手でないため破棄した数
 
 static uint8_t g_peer_mac[6] = {0};      // 実効値（NVS or default）
 static uint8_t g_default_mac[6] = {0};   // configure 時に渡された fallback
@@ -85,6 +86,7 @@ void configure(const uint8_t defaultPeerMac[6],
   g_sent_lines = 0;
   g_recv_lines = 0;
   g_replay_drops = 0;
+  g_foreign_drops = 0;
   g_last_rx_seq = 0;
   loadPeerFromNvs();
 }
@@ -155,7 +157,9 @@ void printStats() {
   g_uart_port->print(", bad=");
   g_uart_port->print(g_bad_frames);
   g_uart_port->print(", replay=");
-  g_uart_port->println(g_replay_drops);
+  g_uart_port->print(g_replay_drops);
+  g_uart_port->print(", foreign=");
+  g_uart_port->println(g_foreign_drops);
 }
 
 bool handleLocalCommand(const char* line) {
@@ -249,7 +253,15 @@ void handleReceivedLine(const uint8_t* line, uint16_t len) {
   writeReceivedLine(line, len);
 }
 
-void onRecv(const esp_now_recv_info_t*, const uint8_t* data, int len) {
+void onRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
+  // 送信元 MAC がペア相手と一致しないフレームは破棄する。
+  // クラスで secrets.h / channel を共有する別機・別地上局の混信を地上局段で遮断する。
+  // peer 未設定 (全 0) のときはフィルタしない（ペアリング前の運用を壊さない）。
+  if (info && !macIsZero(g_peer_mac)
+      && memcmp(info->src_addr, g_peer_mac, 6) != 0) {
+    g_foreign_drops++;
+    return;
+  }
   if (!isFrameSane(data, static_cast<size_t>(len))) {
     g_bad_frames++;
     return;
