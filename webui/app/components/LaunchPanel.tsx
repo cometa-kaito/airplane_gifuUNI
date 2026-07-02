@@ -25,6 +25,7 @@ import { PHASE_NAMES, type TelemetryFrame } from "../hooks/useTelemetry";
 // リスクを完全排除するため、auto-LANDED 系パラメータは UI から削除。
 type StoredParams = {
   launch_g: number;
+  launch_grace: number;
   climb_ms: number;
   climb_pitch: number;
   climb_ff: number;
@@ -33,6 +34,7 @@ type StoredParams = {
 
 const DEFAULTS: StoredParams = {
   launch_g: 2.5,
+  launch_grace: 500,
   climb_ms: 1500,
   climb_pitch: 15,
   climb_ff: 5,
@@ -45,6 +47,14 @@ const LAUNCH_G_PRESETS = [
   { value: 1.8, label: "1.8g", hint: "弱投擲（軽く放る）" },
   { value: 2.5, label: "2.5g", hint: "標準（既定）" },
   { value: 3.5, label: "3.5g", hint: "強投擲（しっかり投げる）" },
+];
+
+// 投擲直後にエレベータを何度上げるか (feed-forward)。LAUNCH フェーズ全体で加算される。
+const CLIMB_FF_PRESETS = [
+  { value: 0, label: "0° なし", hint: "機首上げ補助なし (PID のみ)" },
+  { value: 3, label: "+3° 弱", hint: "軽い機首上げ" },
+  { value: 5, label: "+5° 標準", hint: "既定値" },
+  { value: 10, label: "+10° 強", hint: "強い機首上げ (失速に注意)" },
 ];
 
 const PHASE_COLORS: Record<number, string> = {
@@ -138,6 +148,12 @@ export function LaunchPanel({
         await onSend(`climb_pitch ${applied.climb_pitch.toFixed(1)}`); await sleep(15);
         await onSend(`climb_ff ${applied.climb_ff.toFixed(1)}`); await sleep(15);
         await onSend(`glide_pitch ${applied.glide_pitch.toFixed(1)}`);
+        // launch_grace は 2026-07 以降のファームのみ対応。既定値 (500) のままなら
+        // 送信不要なので、旧ファームで「未達コマンド」警告を出さないよう変更時のみ送る。
+        if (applied.launch_grace !== DEFAULTS.launch_grace) {
+          await sleep(15);
+          await onSend(`launch_grace ${Math.round(applied.launch_grace)}`);
+        }
       } catch {
         autoSyncedRef.current = false;
       }
@@ -522,45 +538,94 @@ export function LaunchPanel({
         </div>
       </div>
 
-      {/* launch_g preset 行 */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
-          launch_g preset
-        </span>
-        {LAUNCH_G_PRESETS.map((p) => (
-          <button
-            key={p.value}
-            onClick={() => sendOne("launch_g", "launch_g", p.value)}
-            disabled={!enabled || busy}
-            title={p.hint}
-            className={`px-2.5 py-1 text-xs font-bold rounded-md border transition ${
-              Math.abs(applied.launch_g - p.value) < 0.01
-                ? "bg-glider-accent/15 border-glider-accent text-glider-accent"
-                : "bg-glider-surface border-glider-border text-glider-textDim hover:border-glider-borderHi"
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
+      {/* launch_g preset 行 (+微調整スピナー) */}
+      <div className="flex items-end gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
+            launch_g preset
+          </span>
+          {LAUNCH_G_PRESETS.map((p) => (
+            <button
+              key={p.value}
+              onClick={() => sendOne("launch_g", "launch_g", p.value)}
+              disabled={!enabled || busy}
+              title={p.hint}
+              className={`px-2.5 py-1 text-xs font-bold rounded-md border transition ${
+                Math.abs(applied.launch_g - p.value) < 0.01
+                  ? "bg-glider-accent/15 border-glider-accent text-glider-accent"
+                  : "bg-glider-surface border-glider-border text-glider-textDim hover:border-glider-borderHi"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {numInput("launch_g", "微調整", "g", "launch_g", 1.0, 8.0, 0.1, 2)}
       </div>
 
-      {/* 詳細パラメータ */}
-      <details className="border-t border-glider-border/50 pt-2">
-        <summary className="cursor-pointer select-none text-[12px] uppercase tracking-wider font-semibold text-glider-textDim hover:text-glider-text">
-          ▸ Advanced phase parameters (climb / glide / landed)
-        </summary>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 pt-3 pb-1">
-          {numInput("launch_g", "launch_g", "g", "launch_g", 1.0, 8.0, 0.1, 2, "投擲しきい値")}
-          {numInput("climb_ms", "climb_ms", "ms", "climb_ms", 200, 10000, 100, 0, "LAUNCH 持続時間")}
+      {/* ============ 投擲直後の機首上げ (Climb-out) ============ */}
+      <div className="border-t border-glider-border/50 pt-3 space-y-2">
+        <div className="text-[12px] uppercase tracking-wider font-semibold text-glider-textDim">
+          ✈ 投擲直後の機首上げ (Climb-out)
+        </div>
+        <div className="text-[11px] text-glider-textDim bg-glider-surface border border-glider-border/50 rounded px-3 py-2 leading-relaxed">
+          投擲を検知すると、まず <strong>launch_grace</strong> の間は PID を止めてエレベータを{" "}
+          <strong>climb_ff</strong> 分だけ上げて保持します (姿勢推定の復帰待ち)。
+          その後 <strong>climb_pitch</strong> を目標に PID + climb_ff で上昇し、
+          <strong>climb_ms</strong> 経過で GLIDE (巡航) に移ります。
+          <br />
+          <span className="text-glider-textMute">
+            💡 機首上げが強すぎて宙返り気味 → climb_ff を下げる / 上昇が足りず沈む → climb_ff を上げる。
+          </span>
+        </div>
+
+        {/* climb_ff プリセット (最重要ノブなのでワンタップで変更可能に) */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
+            エレベータ上げ量 (climb_ff)
+          </span>
+          {CLIMB_FF_PRESETS.map((p) => (
+            <button
+              key={p.value}
+              onClick={() => sendOne("climb_ff", "climb_ff", p.value)}
+              disabled={!enabled || busy}
+              title={p.hint}
+              className={`px-2.5 py-1 text-xs font-bold rounded-md border transition ${
+                Math.abs(applied.climb_ff - p.value) < 0.01
+                  ? "bg-glider-accent/15 border-glider-accent text-glider-accent"
+                  : "bg-glider-surface border-glider-border text-glider-textDim hover:border-glider-borderHi"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1 pb-1">
+          {numInput("climb_ff", "climb_ff", "deg", "climb_ff", -30, 30, 1, 1, "エレベータ上げ量")}
           {numInput("climb_pitch", "climb_pitch", "deg", "climb_pitch", -45, 60, 1, 1, "上昇目標角")}
-          {numInput("climb_ff", "climb_ff", "deg", "climb_ff", -30, 30, 1, 1, "エレベータ FF")}
+          {numInput("climb_ms", "climb_ms", "ms", "climb_ms", 200, 10000, 100, 0, "上昇時間")}
+          {numInput("launch_grace", "launch_grace", "ms", "launch_grace", 0, 5000, 100, 0, "PID 停止保持")}
+        </div>
+        <div className="text-[10px] text-glider-textMute leading-snug">
+          ⚠ <strong>launch_grace</strong> の変更は 2026-07 以降の機体ファーム (nRF52840) が必要です
+          (旧ファームでは無視され、既定 500ms で動作)。他の項目は旧ファームでも調整できます。
+        </div>
+      </div>
+
+      {/* ============ 滑空 (GLIDE) ============ */}
+      <div className="border-t border-glider-border/50 pt-3 space-y-1">
+        <div className="text-[12px] uppercase tracking-wider font-semibold text-glider-textDim">
+          🕊 滑空 (Glide)
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1 pb-1">
           {numInput("glide_pitch", "glide_pitch", "deg", "glide_pitch", -20, 30, 0.5, 1, "滑空目標角")}
         </div>
-        <div className="text-[10px] text-glider-textMute leading-snug pt-2">
+        <div className="text-[10px] text-glider-textMute leading-snug">
           ※ <strong>LANDED は手動のみ</strong>。GLIDE フェーズから抜けるには 🛬 Land ボタンか Disarm を押してください。
           安定滑空中の |a|≈1g で誤発火するリスクを完全排除するため、auto-LANDED 検出は実装していません。
         </div>
-      </details>
+      </div>
     </div>
   );
 }

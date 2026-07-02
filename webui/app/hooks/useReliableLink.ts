@@ -174,6 +174,7 @@ function buildExpectation(
     case "dfilter":
       return { key: "dfilter", lineTest: prefix("[PARAM] dfilter=") };
     case "launch_g":
+    case "launch_grace":
     case "climb_ms":
     case "climb_pitch":
     case "climb_ff":

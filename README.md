@@ -1,4 +1,4 @@
-# 自律滑空機 自作プログラム集
+﻿# 自律滑空機 自作プログラム集
 
 岐阜大学 機械工学概論II「自律滑空機」プロジェクト用に作成した、機体制御プログラム・地上 UI・ドキュメント一式です。
 機体（nRF52840）で姿勢推定（Madgwick）＋3軸 PID 制御を行い、ESP-NOW 無線で地上 PC と接続。
@@ -125,14 +125,14 @@ DISARMED → (arm) → PRELAUNCH → (|a|>launch_g) → LAUNCH (climb-out)
 | Phase | 制御 | 目標 pitch | サーボ |
 |---|---|---|---|
 | DISARMED / PRELAUNCH | MANUAL | - | trim |
-| LAUNCH (初頭 500ms) | PID ゼロホールド | - | trim + climb_ff |
+| LAUNCH (初頭 launch_grace=500ms 既定) | PID ゼロホールド | - | trim + climb_ff |
 | LAUNCH (残り) | AUTO/PID | climb_pitch (+15°) | PID 出力 + climb_ff |
 | GLIDE | AUTO/PID | glide_pitch (+3°) | PID 出力 |
 
 旧 `PHASE_LANDED` (フェーズ 4) は DISARMED と機能的に同じため統合済 (`land` コマンドが trim=0 リセット付きで DISARMED に戻す形に変更)。`disarm` は trim を維持して DISARMED へ。
 
 - **armed 中 (DISARMED 以外) は failsafe 抑制** — 地上局接続が落ちても飛行を継続できます。
-- **LAUNCH 直後の 500ms は PID 出力ゼロホールド** — Madgwick が投擲ショックから復帰する猶予。
+- **LAUNCH 直後の launch_grace (既定 500ms) は PID 出力ゼロホールド** — Madgwick が投擲ショックから復帰する猶予。launch_grace <ms> で調整可 (0 で無効)。
 - **LAUNCH 中のエレベータ feed-forward** — `climb_ff` (既定 +5°) を加算し機首上げを補助。
 - **飛行終了は手動のみ** — `land` (trim リセット付き) / `disarm` (trim 維持) を手動で押す。
   飛行中の安定滑空でも |a|≈1g + 一瞬の静止で誤発火するリスクがあるため、自動着地検出は**意図的に実装していない**。

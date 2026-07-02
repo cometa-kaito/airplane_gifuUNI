@@ -47,6 +47,7 @@
 //    arm / disarm       投擲検知の有効化 / 解除（自律滑空モード）
 //    land               強制 LANDED 遷移（手動着地、GLIDE 詰まり脱出）
 //    launch_g <g>       投擲検知しきい値 (既定 2.5g)
+//    launch_grace <ms>  投擲直後の PID ゼロホールド時間 (既定 500ms、この間 FF のみ)
 //    wt                 風洞試験モード遷移 (PID 常時 ON、safeguards 抑制)
 // =============================================================
 
@@ -451,8 +452,9 @@ static void printStatus() {
     (unsigned long)climbMs, climbTargetPitch, glideTargetPitch);
   radioPrintln(buf);
   snprintf(buf, sizeof(buf),
-    "[STATUS] climb_ff_elev=%.1f d_source=%s landed=manual",
-    climbElevatorFF, dSource == DSRC_GYRO ? "GYRO" : "ERROR");
+    "[STATUS] climb_ff_elev=%.1f launch_grace=%lums d_source=%s landed=manual",
+    climbElevatorFF, (unsigned long)launchGraceMs,
+    dSource == DSRC_GYRO ? "GYRO" : "ERROR");
   radioPrintln(buf);
   // サーボ較正 (subtrim + エンドポイント, µs)。ch 0=右エルロン/1=左エルロン/2=エレベータ
   for (int i = 0; i < 3; i++) {
@@ -499,6 +501,7 @@ static void printHelp() {
   radioPrintln("[INFO]   land                 MANUAL LANDED transition (the only LANDED path)");
   radioPrintln("[INFO]   phase                show current phase only");
   radioPrintln("[INFO]   launch_g <g>         throw-detect accel threshold (default 2.5)");
+  radioPrintln("[INFO]   launch_grace <ms>    PID zero-hold after throw, FF only (default 500, 0=off)");
   radioPrintln("[INFO]   climb_ms <ms>        LAUNCH phase duration (default 1500)");
   radioPrintln("[INFO]   climb_pitch <deg>    LAUNCH target pitch (default +15)");
   radioPrintln("[INFO]   glide_pitch <deg>    GLIDE target pitch (default +3)");
@@ -719,6 +722,22 @@ static void handleCommandLine(char* line) {
     launchAccelG = v;
     char buf[64];
     snprintf(buf, sizeof(buf), "[PARAM] launch_g=%.2fg", launchAccelG);
+    radioPrintln(buf);
+    return;
+  }
+  // 投擲検知直後の PID ゼロホールド時間 [ms]。この間 PID 出力は 0 のまま、
+  // エレベータは trim + climb_ff で保持される (Madgwick の投擲ショック復帰待ち)。
+  // 0 で無効 (検知と同時に PID 開始)。既定 500。
+  if (iequals(cmd, "launch_grace")) {
+    char* arg = nextToken(p);
+    float v;
+    if (!arg || !parseFloat(arg, &v) || v < 0.0f || v > 5000.0f) {
+      radioPrintln("[INFO] usage: launch_grace <ms 0..5000>  (default 500)");
+      return;
+    }
+    launchGraceMs = (uint32_t)v;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "[PARAM] launch_grace=%lu", (unsigned long)launchGraceMs);
     radioPrintln(buf);
     return;
   }
