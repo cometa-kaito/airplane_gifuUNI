@@ -12,7 +12,7 @@ const REPO_URL = "https://github.com/cometa-kaito/airplane_gifuUNI";
 const STEPS = [
   { n: 1, t: "つなぐ", d: "地上機 (ESP32-C3) を USB 接続し ▶ Connect Device。" },
   { n: 2, t: "（初回）書込み＆ペア", d: "ファームを GitHub から入手して書込み、/setpeer で機体とペアリング。" },
-  { n: 3, t: "上から順に設定", d: "⓪トリム→較正→①キャリブ→②安全→③手動→④PID→⑤Launch。" },
+  { n: 3, t: "上から順に設定", d: "⓪サーボ較正→トリム→①キャリブ→②安全→③手動→④PID→⑤Launch。" },
 ];
 
 export function OnboardingCard({

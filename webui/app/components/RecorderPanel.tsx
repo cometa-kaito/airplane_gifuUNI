@@ -1,9 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { MutableRefObject } from "react";
-import type { TelemetryFrame } from "../hooks/useTelemetry";
-import { useRecorder } from "../hooks/useRecorder";
+import type { RecorderApi } from "../hooks/useRecorder";
 import { getStorageEstimate, type StorageEstimate } from "../lib/db";
 
 function formatBytes(n: number) {
@@ -34,13 +32,13 @@ function formatTimestamp(ms: number) {
 }
 
 export function RecorderPanel({
-  historyRef,
+  rec,
   liveOK,
 }: {
-  historyRef: MutableRefObject<TelemetryFrame[]>;
+  /** page.tsx が保持する recorder。飛行フェーズ中の自動記録と共有する。 */
+  rec: RecorderApi;
   liveOK: boolean;
 }) {
-  const rec = useRecorder(historyRef);
   const [elapsed, setElapsed] = useState(0);
   const [usage, setUsage] = useState<StorageEstimate>(null);
   const [confirmAll, setConfirmAll] = useState(false);
@@ -85,6 +83,10 @@ export function RecorderPanel({
           <div className="section-title">Recorder · データ保存</div>
           <div className="text-[11px] text-glider-textMute mt-1">
             ブラウザのローカルDB (IndexedDB) に保存 · CSV ダウンロード/削除はワンクリック · ストレージは下の表示で確認可能
+            <br />
+            <span className="text-glider-ok">
+              ✈ 飛行中 (Arm 〜 Land/Disarm +2秒) は自動で記録されます (セッション名 &quot;Flight ...&quot;)。ここでの手動 Record は地上テスト用。
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-2">

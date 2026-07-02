@@ -55,6 +55,10 @@ export type TrimApi = {
   recallNeutral: () => void;
   /** 保存済み中立をもう一度機体へ送信する。 */
   resendNeutral: () => void;
+  /** 現在の live 値をそのまま機体へ再送する (failsafe 回復後の自動再同期用)。 */
+  resendLive: () => Promise<void>;
+  /** UI の live 表示だけを 0 に合わせる (送信しない)。SAFEGUARD で機体が trim=0 になった時用。 */
+  markLiveZero: () => void;
 };
 
 export function useTrim(
@@ -188,6 +192,25 @@ export function useTrim(
 
   const resendNeutral = recallNeutral;
 
+  // 現在の live 値を全ch 再送する。failsafe で機体側 trim が 0 にリセットされた後、
+  // リンク回復時に UI が真とする値へ戻すために useReliableLink から呼ばれる。
+  const resendLive = useCallback(async () => {
+    if (!enabledRef.current) return;
+    const l = liveRef.current;
+    for (let i = 0; i < 3; i++) {
+      await onSend(`s${i} ${l[KEYS[i]]}`);
+      await new Promise((r) => setTimeout(r, 15));
+    }
+  }, [onSend]);
+
+  // SAFEGUARD (姿勢角超過) は機体が意図的に trim=0 へ退避するケース。
+  // 自動で元に戻すのは危険なので、UI 表示側を 0 に合わせて乖離を無くす。
+  const markLiveZero = useCallback(() => {
+    const z = { ...ZERO };
+    liveRef.current = z;
+    setLive(z);
+  }, []);
+
   return {
     neutral,
     live,
@@ -197,5 +220,7 @@ export function useTrim(
     nudgeLive,
     recallNeutral,
     resendNeutral,
+    resendLive,
+    markLiveZero,
   };
 }

@@ -15,8 +15,8 @@ type NavItem = {
 };
 
 const ITEMS: NavItem[] = [
-  { id: "step-trim", label: "⓪ Trim" },
-  { id: "step-cal", label: "較正" },
+  { id: "step-cal", label: "⓪ Servo較正" },
+  { id: "step-trim", label: "Trim" },
   { id: "step-calib", label: "① Calib" },
   { id: "step-safety", label: "② Safety" },
   { id: "step-manual", label: "③ Manual" },

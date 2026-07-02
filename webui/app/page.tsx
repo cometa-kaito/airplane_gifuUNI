@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useWebSerial } from "./hooks/useWebSerial";
 import { useHeartbeat } from "./hooks/useHeartbeat";
+import { useReliableLink } from "./hooks/useReliableLink";
+import { LinkHealthBanner } from "./components/LinkHealthBanner";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import { CommandPanel } from "./components/CommandPanel";
 import { TelemetryPanel } from "./components/TelemetryPanel";
@@ -21,6 +23,7 @@ import { ServoCalPanel } from "./components/ServoCalPanel";
 import { GainPanel } from "./components/GainPanel";
 import { useTrim } from "./hooks/useTrim";
 import { useServoCal } from "./hooks/useServoCal";
+import { useRecorder } from "./hooks/useRecorder";
 import { SafetyPanel } from "./components/SafetyPanel";
 import { CalibrationPanel } from "./components/CalibrationPanel";
 import { LaunchPanel } from "./components/LaunchPanel";
@@ -91,21 +94,110 @@ export default function Page() {
   const url = "WebSerial (USB direct)";
   const attitudeRef = useMemo(() => latestRef, [latestRef]);
 
-  // 接続中は ~750ms 毎に ping を送って機体の failsafe (uplink timeout) を発火させない
+  // 接続中は ~300ms 毎に ping を送って機体の failsafe (uplink timeout) を発火させない。
+  // (750ms だと ping 1〜2 発のロストで failsafe 1500ms に届き、機体 trim が勝手に
+  //  0 リセットされる原因だった)
   const sendCommand = wsSerial.sendCommand;
   const heartbeat = useHeartbeat({
     enabled: status === "open",
-    intervalMs: 750,
+    intervalMs: 300,
     onSend: sendCommand,
   });
 
+  // 無線リンク信頼性レイヤ:
+  //   設定系コマンドは機体の [PARAM]/[MODE]/[PHASE] エコーで確認し、未達なら自動再送。
+  //   機体 FAILSAFE (trim=0 リセット) を検知したら、回復時にトリムを自動再同期する。
+  //   ※ trim (下で生成) と相互参照になるため ref 経由で解決する。
+  const resyncRef = useRef<() => Promise<void>>(async () => {});
+  const link = useReliableLink({
+    sendRaw: sendCommand,
+    subscribeLine: wsSerial.subscribeLine,
+    latestRef,
+    enabled: status === "open",
+    onResync: () => resyncRef.current(),
+  });
+  const reliableSend = link.send;
+
   // サーボ中立トリム (s0/s1/s2) — TrimSetupPanel と QuickControl で共有。
   // 保存済み中立を接続時に機体へ自動同期する。
-  const trim = useTrim(sendCommand, status === "open");
+  const trim = useTrim(reliableSend, status === "open");
 
   // サーボ物理較正 (smid/smax/smin/srev) — 可動域・中立(µs)・反転。
   // 保存済み較正を接続時に機体へ自動同期する。
-  const servoCal = useServoCal(sendCommand, status === "open");
+  const servoCal = useServoCal(reliableSend, status === "open");
+
+  // 再同期の実体: トリム (failsafe / 機体再起動で 0 に戻る) と較正値 (再起動で既定値に戻る)。
+  // いずれも絶対値の再送なので何度実行しても安全。
+  resyncRef.current = async () => {
+    await trim.resendLive();
+    servoCal.resend();
+  };
+
+  // SAFEGUARD (姿勢角超過) で機体が trim=0 に退避したら、UI の live 表示も 0 に合わせる。
+  // (安全のための意図的リセットなので自動復元はしない — バナーで案内する)
+  const safeguardMsg = link.safeguardMsg;
+  const markLiveZero = trim.markLiveZero;
+  useEffect(() => {
+    if (safeguardMsg) markLiveZero();
+  }, [safeguardMsg, markLiveZero]);
+
+  // テレメトリ記録 (IndexedDB)。RecorderPanel の手動 Record に加えて、
+  // 飛行フェーズ (Arm 〜 Land/Disarm) の間は自動で記録する。
+  const rec = useRecorder(history);
+  const recRef = useRef(rec);
+  recRef.current = rec;
+  const autoRecRef = useRef(false); // 現在の記録が自動開始によるものか
+  const prevPhaseRef = useRef(0);
+  const stopTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (status !== "open") return;
+    const id = window.setInterval(() => {
+      const ph = latestRef.current?.phase ?? 0;
+      const prev = prevPhaseRef.current;
+      prevPhaseRef.current = ph;
+      const flying = ph >= 1 && ph <= 3; // PRELAUNCH / LAUNCH / GLIDE
+      const wasFlying = prev >= 1 && prev <= 3;
+      const r = recRef.current;
+
+      if (flying && !wasFlying) {
+        // Arm された: 投擲前から記録開始 (投擲の瞬間も含めて残す)
+        if (stopTimerRef.current !== null) {
+          // Land 直後に再 Arm したケース: 予約済みの停止をキャンセルして継続
+          window.clearTimeout(stopTimerRef.current);
+          stopTimerRef.current = null;
+        } else if (!r.recording && !r.busy) {
+          autoRecRef.current = true;
+          const d = new Date();
+          const p = (n: number) => String(n).padStart(2, "0");
+          void r.start(
+            `Flight ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`,
+          );
+        }
+      }
+
+      if (!flying && wasFlying && autoRecRef.current && r.recording) {
+        // Land / Disarm された: 着地直後の挙動も残すため 2 秒だけ回してから停止
+        if (stopTimerRef.current === null) {
+          stopTimerRef.current = window.setTimeout(() => {
+            stopTimerRef.current = null;
+            const rr = recRef.current;
+            const phNow = latestRef.current?.phase ?? 0;
+            if (autoRecRef.current && rr.recording && !(phNow >= 1 && phNow <= 3)) {
+              autoRecRef.current = false;
+              void rr.stop();
+            }
+          }, 2000);
+        }
+      }
+    }, 300);
+    return () => {
+      window.clearInterval(id);
+      if (stopTimerRef.current !== null) {
+        window.clearTimeout(stopTimerRef.current);
+        stopTimerRef.current = null;
+      }
+    };
+  }, [status, latestRef]);
 
   return (
     <main className="min-h-screen">
@@ -171,6 +263,9 @@ export default function Page() {
       {/* ステップ・ナビ（ヘッダ直下に sticky）。各 Step / Firmware へジャンプ */}
       <StepNav />
 
+      {/* リンク健全性バナー: テレメトリ途絶 / FAILSAFE / SAFEGUARD / 未達コマンドを常時警告 */}
+      <LinkHealthBanner link={link} connected={status === "open"} />
+
       <div className="max-w-[1600px] mx-auto px-4 md:px-8 py-8 space-y-8">
         {/* OFFLINE 時のみ: 初訪問者向けの導入カード（接続で消える） */}
         {status !== "open" && (
@@ -206,7 +301,7 @@ export default function Page() {
                 Pre-flight Workflow
               </h2>
               <p className="text-sm text-slate-500 mt-0.5">
-                上から順に ⓪ サーボトリム → ① キャリブ → ② 安全装置 → ③ 手動確認 → ④ PID → ⑤ Launch
+                上から順に ⓪ サーボ較正 → ① キャリブ → ② 安全装置 → ③ 手動確認 → ④ PID → ⑤ Launch
               </p>
             </div>
             <span
@@ -226,31 +321,35 @@ export default function Page() {
             </span>
           </div>
 
-          {/* Step 0: サーボトリム（全モード共通の機械的 GND。最初に設定する） */}
-          <div id="step-trim" className="scroll-mt-28">
-            <StepHeader
-              num={0}
-              title="Servo Trim · 機械的中立（全モード GND）"
-              hint="サーボ 0° と実機の真っすぐが一致しない場合、ここで補正する。AUTO・風洞どちらもこの値が基準"
-            />
-            <TrimSetupPanel
-              trim={trim}
-              attitudeRef={attitudeRef}
-              onSend={sendCommand}
-              enabled={status === "open"}
-            />
-          </div>
-
-          {/* Step 0b: サーボ可動域較正（取付ごとに 1 回。中立 µs + 両端 µs + 反転） */}
+          {/* Step 0: サーボ較正（機械的中立 + 可動域。取付ごとに 1 回）
+              「真っすぐ」は必ずここの中立 (smid) で合わせる。trim 側で合わせると
+              failsafe / Land の trim=0 リセット時に舵が真っすぐへ戻らなくなる。 */}
           <div id="step-cal" className="scroll-mt-28">
             <StepHeader
               num={0}
-              title="Servo Calibration · 可動域 / 中立（µs エンドポイント）"
-              hint="取付で変わる実際の可動域を µs で設定。両端を超えてサーボを突き当てない（stall 防止）。取付ごとに1回"
+              title="Servo Calibration · 機械的中立 + 可動域（µs）"
+              hint="舵の「真っすぐ」(中立) と可動域をここで較正する。取付ごとに1回。両端を超えてサーボを突き当てない（stall 防止）"
             />
             <ServoCalPanel
               servoCal={servoCal}
               attitudeRef={attitudeRef}
+              enabled={status === "open"}
+            />
+          </div>
+
+          {/* Step 0b: 飛行トリム（空力微調整。通常は 0 のまま）
+              機械的中立は上の Servo Cal に一本化した。ここは試験飛行後の
+              「左に流れる → 少し当て舵」用。failsafe / Land で 0 に戻るのが正しい挙動。 */}
+          <div id="step-trim" className="scroll-mt-28">
+            <StepHeader
+              num={0}
+              title="Flight Trim · 飛行微調整（通常は 0°）"
+              hint="試験飛行で機体が流れる時の当て舵 (度)。真っすぐ合わせは上の Servo Calibration の中立で行う"
+            />
+            <TrimSetupPanel
+              trim={trim}
+              attitudeRef={attitudeRef}
+              onSend={reliableSend}
               enabled={status === "open"}
             />
           </div>
@@ -264,7 +363,7 @@ export default function Page() {
             />
             <CalibrationPanel
               attitudeRef={attitudeRef}
-              onSend={sendCommand}
+              onSend={reliableSend}
               enabled={status === "open"}
             />
           </div>
@@ -280,7 +379,7 @@ export default function Page() {
             <SafetyPanel
               attitudeRef={attitudeRef}
               heartbeatSentCount={heartbeat.sentCount}
-              onSend={sendCommand}
+              onSend={reliableSend}
               enabled={status === "open"}
             />
           </div>
@@ -294,7 +393,7 @@ export default function Page() {
             />
             <QuickControl
               trim={trim}
-              onSend={sendCommand}
+              onSend={reliableSend}
               enabled={status === "open"}
             />
           </div>
@@ -306,7 +405,7 @@ export default function Page() {
               title="PID Gains · 3軸ゲイン + D-LPF"
               hint="保存値は接続時に自動同期。プリセットから開始可"
             />
-            <GainPanel onSend={sendCommand} enabled={status === "open"} />
+            <GainPanel onSend={reliableSend} enabled={status === "open"} />
           </div>
 
           {/* Step 5: 投擲検知（自律飛行モード）。最後に Arm して投げる。 */}
@@ -319,8 +418,9 @@ export default function Page() {
             />
             <LaunchPanel
               attitudeRef={attitudeRef}
-              onSend={sendCommand}
+              onSend={reliableSend}
               enabled={status === "open"}
+              recording={rec.recording}
             />
           </div>
 
@@ -344,7 +444,7 @@ export default function Page() {
             </summary>
             <WindTunnelPanel
               attitudeRef={attitudeRef}
-              onSend={sendCommand}
+              onSend={reliableSend}
               enabled={status === "open"}
             />
           </details>
@@ -369,7 +469,7 @@ export default function Page() {
             </summary>
             <AutoTunePanel
               attitudeRef={attitudeRef}
-              onSend={sendCommand}
+              onSend={reliableSend}
               enabled={status === "open"}
             />
           </details>
@@ -380,7 +480,7 @@ export default function Page() {
         {/* Pre-flight の直後に配置し、初回ユーザの導線を改善。              */}
         {/* ============================================================ */}
         <div id="step-firmware" className="scroll-mt-28">
-          <FirmwarePanel onSend={sendCommand} enabled={status === "open"} />
+          <FirmwarePanel onSend={reliableSend} enabled={status === "open"} />
         </div>
 
         {/* ============================================================ */}
@@ -412,8 +512,9 @@ export default function Page() {
             {/* 詳細テレメトリ (IMU & system) */}
             <TelemetryPanel attitudeRef={attitudeRef} />
 
-            {/* 記録: 保存 / 一覧 / 書き出し / 削除 */}
-            <RecorderPanel historyRef={history} liveOK={status === "open"} />
+            {/* 記録: 保存 / 一覧 / 書き出し / 削除。
+                recorder 本体は page 側で保持 (飛行フェーズ中の自動記録と共有するため) */}
+            <RecorderPanel rec={rec} liveOK={status === "open"} />
           </div>
         </details>
 
@@ -431,7 +532,7 @@ export default function Page() {
           </summary>
           <div className="px-5 pb-5 pt-1 space-y-4">
             <CommandPanel
-              onSend={sendCommand}
+              onSend={reliableSend}
               enabled={status === "open"}
               hint="WebSerial: USB 直結。Python 不要。地上機ペアリングは /mac /setpeer も可"
             />

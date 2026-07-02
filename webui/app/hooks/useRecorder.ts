@@ -28,6 +28,8 @@ const COUNT_UI_UPDATE_MS = 250; // 「frames 数」表示の更新頻度
  *   - 唯一の弱点: タブが非アクティブで RAF が止まる長時間バックグラウンドでは取りこぼす
  *     (アクティブ使用前提)
  */
+export type RecorderApi = ReturnType<typeof useRecorder>;
+
 export function useRecorder(historyRef: MutableRefObject<TelemetryFrame[]>) {
   const [recording, setRecording] = useState(false);
   const [sessionId, setSessionId] = useState<number | null>(null);

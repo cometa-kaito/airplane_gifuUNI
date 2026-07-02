@@ -100,8 +100,8 @@ Web UI は **上から順に触る** ように UI が並んでいます:
 
 ```
 Connect              Chrome / Edge で地上機を USB 接続（▶ Connect Device）
-Step 0   Servo Trim         全モード共通の機械的中立（度）
-Step 0b  Servo Cal          可動域 min/center/max（µs）をドラッグ＋ライブジョグで較正
+Step 0   Servo Cal          機械的中立 (center) + 可動域 min/max（µs）をドラッグ＋ライブジョグで較正
+Step 0b  Flight Trim        飛行微調整トリム（度）。通常は 0。真っすぐ合わせは Step 0 の中立で行う
 Step 1   Calibration        機体を水平に置いて Zero Now
 Step 2   Safety             姿勢角しきい値 + Failsafe を設定
 Step 3   Manual Check       MANUAL で D-Pad / 矢印キーで舵の効きを確認

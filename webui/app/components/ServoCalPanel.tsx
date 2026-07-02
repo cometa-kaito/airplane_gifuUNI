@@ -292,12 +292,17 @@ export function ServoCalPanel({
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <div className="section-title">
-            Servo Calibration · 可動域 / 中立（µs エンドポイント）
+            Servo Calibration · 機械的中立 + 可動域（µs エンドポイント）
           </div>
           <div className="text-[11px] text-glider-textMute mt-1 leading-snug">
             <strong>動かして見て決める</strong>較正。トラックのハンドルをドラッグ、または
             <strong>「端へ」</strong>でサーボを実際に動かし、舵を見ながら可動域を詰めます。
             両端を超えてサーボを突き当てません（stall 防止）。
+            <br />
+            <span className="text-glider-accent font-medium">
+              ★ 舵の「真っすぐ」(機械的中立) は<strong>ここの中立 (center)</strong> で合わせます。
+              こうすると failsafe / Land の安全リセット (trim=0) 時にも舵が真っすぐへ戻ります。
+            </span>
             <br />
             <span className="text-glider-ok">
               ✓ 値はブラウザに保存され、接続時に自動同期。

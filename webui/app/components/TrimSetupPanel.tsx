@@ -6,24 +6,21 @@ import type { TelemetryFrame } from "../hooks/useTelemetry";
 import type { TrimApi } from "../hooks/useTrim";
 
 /**
- * TrimSetupPanel — サーボ機械的中立設定（Step 0 / 全モード GND）
+ * TrimSetupPanel — 飛行トリム微調整（Flight Trim / 通常は 0°）
  *
- * 自作エルロンは「真っすぐ」がサーボ角 0° とは限らない。
- * ここで右/左エルロン・エレベータの機械的中立角（オフセット）を設定する。
+ * 役割分担 (2026-07 整理):
+ *   - 機械的な「真っすぐ」(中立) は Servo Calibration の中立 (smid, µs) で合わせる。
+ *     → failsafe / SAFEGUARD / `land` は trim を 0 にリセットするため、
+ *       真っすぐを trim 側で表現すると安全リセット時に舵が曲がった位置へ戻ってしまう。
+ *       smid で合わせておけば「trim=0 = 物理的に真っすぐ」になり安全動作が正しくなる。
+ *   - このパネルの trim (度) は「試験飛行で左に流れる → エルロンに +2° 当て舵」の
+ *     ような空力的な微調整用。通常は全チャンネル 0° のままで良い。
  *
  * ファームウェアは全モードで servo_out = trimDeg + 制御出力 として動く:
- *   - MANUAL: servo_out = trimDeg (PID なし → 舵が物理的に真っすぐになることを目視確認)
- *   - AUTO:   servo_out = trimDeg + PID出力
- *   - 風洞:   servo_out = trimDeg + PID出力  (AUTO と同じ)
- * つまり「全モード共通のゼロ基準」がここで設定する trimDeg。
+ *   - MANUAL: servo_out = trimDeg (PID なし)
+ *   - AUTO / 風洞: servo_out = trimDeg + PID出力
  *
- * 使い方:
- *   1. スライダ / 数値 / 微調整ボタンで、実機の舵が真っすぐになる角度に合わせる。
- *      → 接続中はリアルタイムで機体へ送信され、サーボが動く。
- *   2. 「MANUAL で保持」を押すと目視確認しやすい (MANUAL は PID を切るのでサーボが止まる)。
- *   3. 設定値はブラウザに保存され、次回接続時に自動で機体へ送信される
- *      (機体は電源 OFF で trim が消えるが、ここの保存値から毎回復元できる)。
- *
+ * 設定値はブラウザに保存され、次回接続時・failsafe 回復時に自動で機体へ再送される。
  * 機体側コマンド: `s0/s1/s2 <deg>` (右エルロン/左エルロン/エレベータ, -90..+90)
  */
 
@@ -131,19 +128,19 @@ export function TrimSetupPanel({
     <div className="card-pad space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <div className="section-title">Servo Trim · 機械的中立設定（全モード GND）</div>
+          <div className="section-title">Flight Trim · 飛行微調整（通常は 0°）</div>
           <div className="text-[11px] text-glider-textMute mt-1 leading-snug">
-            各舵の<strong> 機械的中立角</strong>（サーボ 0° と物理的な真っすぐのズレ）を補正します。
-            スライダ / 数値で実機の舵が真っすぐになる値へ調整。
-            <strong> MANUAL で保持</strong> を押すと PID が切れてサーボが静止するので目視確認しやすいです。
+            試験飛行で機体が流れる時の<strong>空力的な当て舵</strong>を度数で微調整します
+            (例: 左に流れる → エルロンに +2°)。全モードで servo_out = trim + 制御出力。
+            <strong> MANUAL で保持</strong> を押すと PID が切れてサーボが静止するので確認しやすいです。
             <br />
-            <span className="text-glider-ok font-medium">
-              ✓ この値は MANUAL / AUTO / 風洞の全モードで GND（servo_out = trim + 制御出力）として使われます。
+            <span className="text-glider-warn font-medium">
+              ⚠ 舵の機械的な「真っすぐ」合わせはここではなく、上の <strong>Servo Calibration の中立 (center)</strong> で行ってください。
+              この trim は failsafe / セーフガード / 🛬 Land で安全のため自動的に 0° へ戻ります (trim=0 で真っすぐになるのが正しい状態)。
             </span>
             <br />
             <span className="text-glider-ok">
-              ✓ 設定値はブラウザに保存され、次回接続時に自動で機体へ送信されます
-              (電源 OFF で消える機体側 trim を毎回復元)。
+              ✓ 設定値はブラウザに保存され、次回接続時・通信回復時に自動で機体へ再送されます。
             </span>
           </div>
         </div>

@@ -42,6 +42,17 @@ export function useWebSerial() {
   const infoLogRef = useRef<{ ts: number; line: string }[]>([]);
   const [infoLogTick, setInfoLogTick] = useState(0);  // 再描画トリガ用
 
+  // 情報ライン購読者 (コマンド ACK 照合 / FAILSAFE 検知用)。
+  // infoLogTick は 100ms スロットルされるため、行単位の即時反応が必要な
+  // 用途 (useReliableLink) はこちらを使う。受信スレッドから同期呼び出し。
+  const lineListenersRef = useRef<Set<(line: string) => void>>(new Set());
+  const subscribeLine = useCallback((cb: (line: string) => void) => {
+    lineListenersRef.current.add(cb);
+    return () => {
+      lineListenersRef.current.delete(cb);
+    };
+  }, []);
+
   // SSR 対応: 初期は false、マウント後に navigator.serial の有無を判定
   const [supported, setSupported] = useState(false);
   useEffect(() => {
@@ -69,6 +80,14 @@ export function useWebSerial() {
         lastSetInfo.current = now;
         setInfoLogTick((n) => n + 1);
       }
+      // 購読者へ即時通知 (ACK 照合・FAILSAFE 検知)。例外は握りつぶして受信ループを守る。
+      lineListenersRef.current.forEach((cb) => {
+        try {
+          cb(line);
+        } catch {
+          // ignore
+        }
+      });
       return;
     }
 
@@ -263,5 +282,6 @@ export function useWebSerial() {
     connect,
     disconnect,
     sendCommand,
+    subscribeLine,
   };
 }

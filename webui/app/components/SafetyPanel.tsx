@@ -413,7 +413,7 @@ export function SafetyPanel({
             </div>
             <div className="text-[11px] text-glider-textMute mt-0.5">
               この時間アップリンク (コマンド) 受信が無いと MANUAL + trim=0 に強制復帰。
-              WebUI は <strong>~750ms 毎に <code className="font-mono text-glider-textDim">ping</code> を自動送信</strong> して uplink を生存させます。<strong>0 で無効</strong>。
+              WebUI は <strong>~300ms 毎に <code className="font-mono text-glider-textDim">ping</code> を自動送信</strong> して uplink を生存させます (無線が数発落ちても発火しない設計)。<strong>0 で無効</strong>。
             </div>
           </div>
           <div

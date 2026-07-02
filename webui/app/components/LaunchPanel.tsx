@@ -69,10 +69,13 @@ export function LaunchPanel({
   attitudeRef,
   onSend,
   enabled,
+  recording = false,
 }: {
   attitudeRef: MutableRefObject<TelemetryFrame | null>;
   onSend: (cmd: string) => Promise<void>;
   enabled: boolean;
+  /** テレメトリ記録中か (飛行中は page 側が自動で記録を開始する)。 */
+  recording?: boolean;
 }) {
   const [params, setParams] = useState<StoredParams>(DEFAULTS);
   const [applied, setApplied] = useState<StoredParams>(DEFAULTS);
@@ -384,9 +387,20 @@ export function LaunchPanel({
           <div className="text-[11px] text-glider-textMute mt-1 leading-snug">
             機体側のフェーズマシン (DISARMED→PRELAUNCH→LAUNCH→GLIDE→LANDED) を操作・監視。
             Arm 後の遷移はすべて機体側で自動。armed 中 (DISARMED 以外) は failsafe 抑制。
+            <br />
+            <span className="text-glider-ok">
+              ⏺ Arm すると自動でテレメトリ記録が始まり、Land / Disarm の 2 秒後に保存されます
+              (In-flight / Post-flight の Recorder から CSV 取得)。
+            </span>
           </div>
         </div>
         <div className="text-right">
+          {recording && (
+            <div className="inline-flex items-center gap-1.5 mb-1 px-2 py-0.5 rounded bg-glider-err/10 ring-1 ring-glider-err/30">
+              <span className="w-2 h-2 rounded-full bg-glider-err animate-pulseWarn" aria-hidden />
+              <span className="text-[10px] font-bold tracking-wider text-glider-err">REC</span>
+            </div>
+          )}
           <div className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
             Current Phase
           </div>

@@ -10,8 +10,11 @@ import { useEffect, useRef, useState } from "react";
  * 通常運用ではユーザーが UI に触っていなくても uplink を生存させたいので、
  * 接続中はバックグラウンドで `ping` コマンドを定期送信する。
  *
- * 既定間隔 750ms = failsafe 1500ms の半分。ジッタや一時的な送信失敗があっても
- * failsafe 発火前に必ず 1度は届く設計。
+ * 既定間隔 300ms (failsafe 既定 1500ms の 1/5)。
+ * 旧値 750ms では ping 1〜2 発のロスト (ESP-NOW 不安定時に普通に起きる) で
+ * failsafe が発火し、機体側 trim=0 リセット → UI と機体のサーボ状態乖離の
+ * 主要因になっていた。300ms なら連続 4 発落ちても発火しない。
+ * ping は 5 byte/行 なので帯域・機体側処理とも影響は無視できる。
  *
  * 返り値:
  *   - sentCount:    累積送信回数 (UI 表示用)
@@ -19,7 +22,7 @@ import { useEffect, useRef, useState } from "react";
  */
 export function useHeartbeat({
   enabled,
-  intervalMs = 750,
+  intervalMs = 300,
   onSend,
 }: {
   enabled: boolean;
