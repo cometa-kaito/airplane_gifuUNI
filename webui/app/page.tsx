@@ -448,6 +448,7 @@ export default function Page() {
               enabled={status === "open"}
               recording={rec.recording}
               onPreviewElevator={previewElevatorFF}
+              elevatorTrim={trim.live.s2}
             />
           </div>
 

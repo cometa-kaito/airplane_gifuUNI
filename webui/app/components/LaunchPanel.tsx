@@ -81,6 +81,7 @@ export function LaunchPanel({
   enabled,
   recording = false,
   onPreviewElevator,
+  elevatorTrim = 0,
 }: {
   attitudeRef: MutableRefObject<TelemetryFrame | null>;
   onSend: (cmd: string) => Promise<void>;
@@ -89,6 +90,8 @@ export function LaunchPanel({
   recording?: boolean;
   /** climb_ff プレビュー: エレベータを実際に trim+ff の位置へ動かす (null で解除)。 */
   onPreviewElevator?: (ff: number | null) => void;
+  /** 現在のエレベータ trim (deg)。旧ファーム互換ブーストの基準値に使う。 */
+  elevatorTrim?: number;
 }) {
   const [params, setParams] = useState<StoredParams>(DEFAULTS);
   const [applied, setApplied] = useState<StoredParams>(DEFAULTS);
@@ -112,6 +115,53 @@ export function LaunchPanel({
 
   const launchGAppliedRef = useRef<number>(applied.launch_g);
   launchGAppliedRef.current = applied.launch_g;
+
+  // ---- 旧ファーム互換ブースト (climb_ff ±30 制限の回避) ----
+  //   旧ファームは climb_ff を ±30 でリジェクトする。書き込みせずに ±30 超えを
+  //   使うため、機体へは climb_ff を ±30 にクランプして送り、超過分は Arm 時に
+  //   エレベータ trim (`s2`、±90 まで受理) へ上乗せする。
+  //   GLIDE 移行 / DISARMED 復帰 / arm 未達 (5s) で trim を自動復帰する。
+  //   ※ 飛行中に通信が完全に切れると GLIDE で上乗せ分が残るリスクがある
+  //     (Land で trim=0 に戻る)。確実なのは最新ファームの書き込み。
+  const FF_LIMIT = 30;
+  const [ffCompat, setFfCompat] = useState(true);
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem("glider-webui:ff_compat");
+      if (v != null) setFfCompat(v !== "0");
+    } catch { /* ignore */ }
+  }, []);
+  const ffCompatRef = useRef(ffCompat);
+  ffCompatRef.current = ffCompat;
+  const onSendRef = useRef(onSend);
+  onSendRef.current = onSend;
+  const appliedRef = useRef(applied);
+  appliedRef.current = applied;
+  const elevatorTrimRef = useRef(elevatorTrim);
+  elevatorTrimRef.current = elevatorTrim;
+  // 超過分 (±30 を超える部分のみ)。-60 なら -30、+45 なら +15、±30 以内なら 0。
+  const ffExtra = (v: number) => (v > FF_LIMIT ? v - FF_LIMIT : v < -FF_LIMIT ? v + FF_LIMIT : 0);
+  const ffWire = (v: number) =>
+    ffCompatRef.current ? Math.max(-FF_LIMIT, Math.min(FF_LIMIT, v)) : v;
+  // 適用中ブースト: base = 復帰先の trim、seenFlight = arm が通ったか
+  const boostRef = useRef<{ base: number; seenFlight: boolean } | null>(null);
+
+  // フェーズ変化でブーストを解決する:
+  //   PRELAUNCH/LAUNCH を見たら「飛行が始まった」と記録し、
+  //   GLIDE (3) または DISARMED (0) へ入ったら trim を復帰する。
+  useEffect(() => {
+    const b = boostRef.current;
+    if (!b) return;
+    if (currentPhase === 1 || currentPhase === 2) {
+      b.seenFlight = true;
+      return;
+    }
+    if (b.seenFlight && (currentPhase === 3 || currentPhase === 0)) {
+      boostRef.current = null;
+      // 確認応答つき送信 (未達なら自動再送) で元の trim へ戻す
+      void onSendRef.current(`s2 ${Math.round(b.base)}`).catch(() => {});
+    }
+  }, [currentPhase]);
 
   // ---- climb_ff「実機で確認」プレビュー ----
   //   ON の間、エレベータを実際に trim+climb_ff の位置へ動かして目視確認できる。
@@ -175,7 +225,8 @@ export function LaunchPanel({
         await onSend(`launch_g ${applied.launch_g.toFixed(2)}`); await sleep(15);
         await onSend(`climb_ms ${Math.round(applied.climb_ms)}`); await sleep(15);
         await onSend(`climb_pitch ${applied.climb_pitch.toFixed(1)}`); await sleep(15);
-        await onSend(`climb_ff ${applied.climb_ff.toFixed(1)}`); await sleep(15);
+        // 互換モード中は機体へ ±30 にクランプした値を送る (超過分は Arm 時に trim へ)
+        await onSend(`climb_ff ${ffWire(applied.climb_ff).toFixed(1)}`); await sleep(15);
         await onSend(`glide_pitch ${applied.glide_pitch.toFixed(1)}`);
         // launch_grace は 2026-07 以降のファームのみ対応。既定値 (500) のままなら
         // 送信不要なので、旧ファームで「未達コマンド」警告を出さないよう変更時のみ送る。
@@ -198,7 +249,10 @@ export function LaunchPanel({
       }
       setBusy(true);
       try {
-        await onSend(`${cmd} ${value}`);
+        // 互換モード中の climb_ff は機体へ ±30 にクランプして送る
+        // (UI/applied はユーザ設定値のまま。超過分は Arm 時に trim へ上乗せ)
+        const wire = cmd === "climb_ff" ? ffWire(value) : value;
+        await onSend(`${cmd} ${wire}`);
         setParams((p) => {
           const next = { ...p, [key]: value };
           setApplied((a) => {
@@ -310,6 +364,25 @@ export function LaunchPanel({
     if (!enabled || busy) return;
     setBusy(true);
     try {
+      // 旧ファーム互換ブースト: climb_ff の ±30 超過分を Arm 直前に trim へ上乗せ。
+      // PRELAUNCH は MANUAL (servo=trim) なので投擲前からエレベータが上がり、
+      // 目視で「上がっている」ことを確認してから投げられる。
+      const extra = ffExtra(appliedRef.current.climb_ff);
+      if (ffCompatRef.current && extra !== 0) {
+        const base = elevatorTrimRef.current;
+        const target = Math.max(-90, Math.min(90, base + extra));
+        boostRef.current = { base, seenFlight: false };
+        await onSend(`s2 ${Math.round(target)}`);
+        // arm が機体に届かなかった場合の取り残し防止:
+        // 5 秒経っても DISARMED のまま (PRELAUNCH に入っていない) なら trim を戻す
+        window.setTimeout(() => {
+          const b = boostRef.current;
+          if (b && !b.seenFlight && lastPhaseRef.current === 0) {
+            boostRef.current = null;
+            void onSendRef.current(`s2 ${Math.round(b.base)}`).catch(() => {});
+          }
+        }, 5000);
+      }
       await onSend("arm");
     } finally {
       setBusy(false);
@@ -660,9 +733,47 @@ export function LaunchPanel({
           {numInput("climb_ms", "climb_ms", "ms", "climb_ms", 200, 10000, 100, 0, "上昇時間")}
           {numInput("launch_grace", "launch_grace", "ms", "launch_grace", 0, 5000, 100, 0, "PID 停止保持")}
         </div>
+        {/* 旧ファーム互換モード: climb_ff ±30 制限を trim 上乗せで回避 */}
+        <div className="flex items-start gap-2 bg-glider-surface border border-glider-border/50 rounded px-3 py-2">
+          <input
+            type="checkbox"
+            id="ff-compat"
+            checked={ffCompat}
+            onChange={(e) => {
+              const on = e.target.checked;
+              setFfCompat(on);
+              try {
+                window.localStorage.setItem("glider-webui:ff_compat", on ? "1" : "0");
+              } catch { /* ignore */ }
+              // モード切替時は climb_ff を送り直す (クランプ有無が変わるため)
+              if (enabled) {
+                const v = appliedRef.current.climb_ff;
+                const wire = on ? Math.max(-FF_LIMIT, Math.min(FF_LIMIT, v)) : v;
+                void onSendRef.current(`climb_ff ${wire.toFixed(1)}`).catch(() => {});
+              }
+            }}
+            className="mt-0.5"
+          />
+          <label htmlFor="ff-compat" className="text-[11px] text-glider-textDim leading-snug cursor-pointer">
+            <strong>旧ファーム互換モード</strong> — 機体ファームを書き込まずに climb_ff の ±30° 超えを使う。
+            機体へは climb_ff を ±30 にクランプして送り、超過分は <strong>Arm した瞬間にエレベータ trim (s2) へ上乗せ</strong>、
+            GLIDE 移行 / Disarm で自動的に元へ戻します (確認応答つき・未達なら自動再送)。
+            {ffCompat && ffExtra(applied.climb_ff) !== 0 && (
+              <span className="block mt-1 font-mono text-glider-accent">
+                現在の分割: climb_ff {ffWire(applied.climb_ff).toFixed(0)}° + Arm 時 trim{" "}
+                {ffExtra(applied.climb_ff) > 0 ? "+" : ""}
+                {ffExtra(applied.climb_ff).toFixed(0)}° = 計 {applied.climb_ff.toFixed(0)}°
+              </span>
+            )}
+            <span className="block mt-0.5 text-glider-warn">
+              ⚠ 飛行中に通信が完全に切れると GLIDE で上乗せ分が残ります (🛬 Land で trim=0 に戻る)。
+              確実なのは最新ファームの書き込みです。
+            </span>
+          </label>
+        </div>
         <div className="text-[10px] text-glider-textMute leading-snug">
-          ⚠ <strong>launch_grace</strong> の変更と <strong>climb_ff の ±30° 超え</strong>は
-          2026-07 以降の機体ファーム (nRF52840) が必要です (旧ファームでは拒否され、未達警告が出ます)。
+          ⚠ <strong>launch_grace</strong> の変更は 2026-07 以降の機体ファーム (nRF52840) が必要です
+          (旧ファームでは無視され、既定 500ms で動作)。
           climb_ff は最終舵角 ±90° でクリップされるため、±90 が実質の上限です。
         </div>
       </div>
