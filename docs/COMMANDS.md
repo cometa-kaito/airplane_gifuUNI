@@ -79,7 +79,7 @@
 | `launch_grace <ms>` | **投擲検知直後の PID ゼロホールド時間** [ms]。この間 PID 出力は 0 のまま、エレベータは trim + `climb_ff` で保持（Madgwick の投擲ショック復帰待ち）。既定 500、範囲 0..5000（0 で無効 = 検知と同時に PID 開始）。2026-07 以降のファームで対応 |
 | `climb_ms <ms>` | LAUNCH フェーズの持続時間 [ms]。既定 1500、範囲 200..10000 |
 | `climb_pitch <deg>` | LAUNCH 中の目標 pitch（機首上げ）。既定 +15°、範囲 -45..60 |
-| `climb_ff <deg>` | LAUNCH 中のエレベータ feed-forward 加算。既定 +5°、範囲 -30..30 |
+| `climb_ff <deg>` | LAUNCH 中のエレベータ feed-forward 加算。既定 +5°、範囲 -90..90（最終舵角が ±90° でクリップされるため実質上限なし。2026-07 より前のファームは -30..30） |
 | `glide_pitch <deg>` | GLIDE 中の目標 pitch（最良滑空）。既定 +3°、範囲 -20..30 |
 | `d_source <gyro\|error>` | D 項の計算ソース。**既定 gyro**（Lesson17 推奨。ジャイロ生値を直接使用）。`error` で従来の `(e-prevE)/dt + dfilter` に戻る |
 | 削除: `landed_g` / `landed_gyro` / `landed_ms` / `glide_timeout` / `landed_impact_g` | **auto-LANDED 検出を全廃したため削除**。送ると `[INFO] auto-LANDED removed. Use \`land\`...` を返す（古い localStorage 互換のため受理だけする） |

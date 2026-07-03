@@ -760,7 +760,9 @@ static void handleCommandLine(char* line) {
       climbTargetPitch = v;
       snprintf(buf, sizeof(buf), "[PARAM] climb_pitch=%.1f", climbTargetPitch);
     } else if (iequals(cmd, "climb_ff")) {
-      if (v < -30 || v > 30) { radioPrintln("[INFO] climb_ff range -30..30"); return; }
+      // 上限は物理舵角と同じ ±90 (最終出力 angle_E が ±90 でクリップされるため、
+      // これ以上は意味がない)。旧上限 ±30 はユーザ要望で撤廃 (2026-07)。
+      if (v < -90 || v > 90) { radioPrintln("[INFO] climb_ff range -90..90"); return; }
       climbElevatorFF = v;
       snprintf(buf, sizeof(buf), "[PARAM] climb_ff=%.1f", climbElevatorFF);
     } else { // glide_pitch

@@ -655,14 +655,15 @@ export function LaunchPanel({
         )}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1 pb-1">
-          {numInput("climb_ff", "climb_ff", "deg", "climb_ff", -30, 30, 1, 1, "エレベータ上げ量")}
+          {numInput("climb_ff", "climb_ff", "deg", "climb_ff", -90, 90, 1, 1, "エレベータ上げ量")}
           {numInput("climb_pitch", "climb_pitch", "deg", "climb_pitch", -45, 60, 1, 1, "上昇目標角")}
           {numInput("climb_ms", "climb_ms", "ms", "climb_ms", 200, 10000, 100, 0, "上昇時間")}
           {numInput("launch_grace", "launch_grace", "ms", "launch_grace", 0, 5000, 100, 0, "PID 停止保持")}
         </div>
         <div className="text-[10px] text-glider-textMute leading-snug">
-          ⚠ <strong>launch_grace</strong> の変更は 2026-07 以降の機体ファーム (nRF52840) が必要です
-          (旧ファームでは無視され、既定 500ms で動作)。他の項目は旧ファームでも調整できます。
+          ⚠ <strong>launch_grace</strong> の変更と <strong>climb_ff の ±30° 超え</strong>は
+          2026-07 以降の機体ファーム (nRF52840) が必要です (旧ファームでは拒否され、未達警告が出ます)。
+          climb_ff は最終舵角 ±90° でクリップされるため、±90 が実質の上限です。
         </div>
       </div>
 
