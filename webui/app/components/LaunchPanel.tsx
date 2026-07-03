@@ -80,12 +80,15 @@ export function LaunchPanel({
   onSend,
   enabled,
   recording = false,
+  onPreviewElevator,
 }: {
   attitudeRef: MutableRefObject<TelemetryFrame | null>;
   onSend: (cmd: string) => Promise<void>;
   enabled: boolean;
   /** テレメトリ記録中か (飛行中は page 側が自動で記録を開始する)。 */
   recording?: boolean;
+  /** climb_ff プレビュー: エレベータを実際に trim+ff の位置へ動かす (null で解除)。 */
+  onPreviewElevator?: (ff: number | null) => void;
 }) {
   const [params, setParams] = useState<StoredParams>(DEFAULTS);
   const [applied, setApplied] = useState<StoredParams>(DEFAULTS);
@@ -109,6 +112,32 @@ export function LaunchPanel({
 
   const launchGAppliedRef = useRef<number>(applied.launch_g);
   launchGAppliedRef.current = applied.launch_g;
+
+  // ---- climb_ff「実機で確認」プレビュー ----
+  //   ON の間、エレベータを実際に trim+climb_ff の位置へ動かして目視確認できる。
+  //   climb_ff を変更するたびに追従し、機体側 sjog の 12s 無操作タイムアウトを
+  //   防ぐため 5s 毎に再送する。OFF / 切断 / DISARMED 以外 で自動解除。
+  const [ffPreview, setFfPreview] = useState(false);
+  const previewFnRef = useRef(onPreviewElevator);
+  previewFnRef.current = onPreviewElevator;
+  useEffect(() => {
+    if (!ffPreview) return;
+    if (!enabled || currentPhase !== 0) {
+      setFfPreview(false);
+      return;
+    }
+    previewFnRef.current?.(applied.climb_ff);
+    const id = window.setInterval(
+      () => previewFnRef.current?.(applied.climb_ff),
+      5000,
+    );
+    return () => window.clearInterval(id);
+  }, [ffPreview, enabled, currentPhase, applied.climb_ff]);
+  // OFF になった時 (アンマウント含む) に解除コマンドを送る
+  useEffect(() => {
+    if (!ffPreview) return;
+    return () => previewFnRef.current?.(null);
+  }, [ffPreview]);
 
   // 初期値ロード
   useEffect(() => {
@@ -579,7 +608,7 @@ export function LaunchPanel({
           </span>
         </div>
 
-        {/* climb_ff プリセット (最重要ノブなのでワンタップで変更可能に) */}
+        {/* climb_ff プリセット (最重要ノブなのでワンタップで変更可能に) + 実機確認トグル */}
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-[10px] uppercase tracking-wider text-glider-textMute font-semibold">
             エレベータ上げ量 (climb_ff)
@@ -599,7 +628,31 @@ export function LaunchPanel({
               {p.label}
             </button>
           ))}
+          {onPreviewElevator && (
+            <button
+              onClick={() => setFfPreview((v) => !v)}
+              disabled={!enabled || currentPhase !== 0}
+              title={
+                currentPhase !== 0
+                  ? "DISARMED 中のみ使えます"
+                  : "エレベータを実際に上げ位置 (trim + climb_ff) へ動かして目視確認。プリセットや ± を押すとその場で追従"
+              }
+              className={`px-2.5 py-1 text-xs font-bold rounded-md border transition ${
+                ffPreview
+                  ? "bg-glider-warn/15 border-glider-warn text-glider-warn animate-pulseWarn"
+                  : "bg-glider-surface border-glider-border text-glider-textDim hover:border-glider-borderHi"
+              }`}
+            >
+              {ffPreview ? "👁 確認中 · 押して戻す" : "👁 実機で確認"}
+            </button>
+          )}
         </div>
+        {ffPreview && (
+          <div className="text-[11px] text-glider-warn font-medium">
+            エレベータを上げ位置へ動かしています。プリセット / ± を押すとその場で追従します。
+            確認が終わったら「押して戻す」で中立へ (Arm・切断・12秒無操作でも自動解除)。
+          </div>
+        )}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1 pb-1">
           {numInput("climb_ff", "climb_ff", "deg", "climb_ff", -30, 30, 1, 1, "エレベータ上げ量")}

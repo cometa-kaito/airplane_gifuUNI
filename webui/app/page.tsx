@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useCallback, useEffect, useState, useMemo, useRef } from "react";
 import { useWebSerial } from "./hooks/useWebSerial";
 import { useHeartbeat } from "./hooks/useHeartbeat";
 import { useReliableLink } from "./hooks/useReliableLink";
@@ -140,6 +140,32 @@ export default function Page() {
   useEffect(() => {
     if (safeguardMsg) markLiveZero();
   }, [safeguardMsg, markLiveZero]);
+
+  // climb_ff の「見ながら調整」プレビュー: エレベータ (ch2) を trim+ff の位置へ
+  // 較正ジョグ (sjog) で実際に動かす。sjog は機体側で DISARMED 時のみ受理され、
+  // フェーズ遷移 / failsafe / 12s 無操作で自動解除される安全設計なので、
+  // プレビューを付けたまま Arm しても飛行に持ち込まれない。
+  // 度→µs の写像はファーム servoLogicalToUs() と同一式 (較正値は UI 側が持っている)。
+  const previewElevatorFF = useCallback(
+    (ff: number | null) => {
+      if (ff === null) {
+        void reliableSend("sjog 2 off");
+        return;
+      }
+      const c = servoCal.cal[2];
+      const total = Math.max(-90, Math.min(90, trim.live.s2 + ff));
+      const logical = c.reverse ? -total : total;
+      let us =
+        logical >= 0
+          ? c.center + (logical / 90) * (c.max - c.center)
+          : c.center + (logical / 90) * (c.center - c.min);
+      const lo = Math.min(c.min, c.max);
+      const hi = Math.max(c.min, c.max);
+      us = Math.max(lo, Math.min(hi, Math.round(us)));
+      void reliableSend(`sjog 2 ${us}`);
+    },
+    [reliableSend, servoCal.cal, trim.live.s2],
+  );
 
   // テレメトリ記録 (IndexedDB)。RecorderPanel の手動 Record に加えて、
   // 飛行フェーズ (Arm 〜 Land/Disarm) の間は自動で記録する。
@@ -421,6 +447,7 @@ export default function Page() {
               onSend={reliableSend}
               enabled={status === "open"}
               recording={rec.recording}
+              onPreviewElevator={previewElevatorFF}
             />
           </div>
 
