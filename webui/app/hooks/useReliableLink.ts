@@ -31,6 +31,9 @@ import type { TelemetryFrame } from "./useTelemetry";
 
 const ACK_TIMEOUT_MS = 600; // エコー待ちタイムアウト (往復は通常 <100ms)
 const MAX_ATTEMPTS = 3; // 初回送信 + 再送2回
+// 連続送信の最小間隔。機体側 nRF のコマンド処理は 128 byte/33ms、コマンドは
+// 平均 ~15 byte なので 35ms 間隔 (~430 B/s) なら大きな余裕を持って処理できる。
+const MIN_SEND_GAP_MS = 35;
 const TLM_FRESH_MS = 800; // テレメトリが「生きている」とみなす最大フレーム年齢
 const TLM_LOST_MS = 1500; // これを超えたら「テレメトリ途絶」表示
 const RESYNC_MIN_INTERVAL_MS = 3000; // 自動再同期の最短間隔 (暴走防止)
@@ -242,6 +245,27 @@ export function useReliableLink({
   const wasLostRef = useRef(false);
   const enabledSinceRef = useRef(0);
 
+  // ---- 送信ペーシング (FIFO 直列化) ----
+  //   機体側 nRF は 1 loop (33ms) あたり 128 byte しかコマンドを処理せず、
+  //   ESP-NOW も小フレームの連射に弱い。接続直後の一斉同期 (~30 コマンド) を
+  //   無間隔で流すと RX バッファ溢れ / 輻輳でエコーごと落ち、再送も同時刻に
+  //   重なって再輻輳 → 「確認できなかったコマンド」が大量に残る症状になる。
+  //   そこで全 uplink を FIFO で直列化し、MIN_SEND_GAP_MS 空けて送る。
+  //   (ping は useHeartbeat が生の sendCommand を使うため、この待ち行列の影響を受けない)
+  const sendQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const lastTxAtRef = useRef(0);
+  const paceSend = useCallback((cmd: string): Promise<void> => {
+    const job = sendQueueRef.current.then(async () => {
+      const wait = lastTxAtRef.current + MIN_SEND_GAP_MS - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      lastTxAtRef.current = Date.now();
+      await sendRawRef.current(cmd);
+    });
+    // 1 件の失敗 (切断等) で待ち行列全体が死なないようにする
+    sendQueueRef.current = job.catch(() => {});
+    return job;
+  }, []);
+
   // ---- 確認応答つき送信 ----
   const settle = useCallback((p: Pending) => {
     window.clearTimeout(p.timer);
@@ -251,10 +275,13 @@ export function useReliableLink({
 
   const send = useCallback(
     (cmd: string): Promise<void> => {
+      if (!enabledRef.current) {
+        return sendRawRef.current(cmd); // 未接続: 即時にエラーを返させる
+      }
       const sentAt = Date.now();
       const exp = buildExpectation(cmd, latestRef, sentAt);
-      if (!exp || !enabledRef.current) {
-        return sendRawRef.current(cmd);
+      if (!exp) {
+        return paceSend(cmd); // 確認対象外 (status 等) もペーシングには乗せる
       }
 
       // 同一キーの古い保留は破棄 (スライダー連打で古い値を再送しない)
@@ -267,32 +294,39 @@ export function useReliableLink({
 
         const attempt = () => {
           p.attempts++;
-          sendRawRef.current(cmd).catch(() => {
-            // シリアル書き込み自体の失敗 (切断等)。再送タイマに任せる。
-          });
-          p.timer = window.setTimeout(() => {
-            if (pendingRef.current.get(exp.key) !== p) return; // 破棄済み
-            // エコーは来なかったが、別の確認手段 (テレメトリ phase 等) で通っていれば成功
-            if (p.exp.checkNow?.()) {
-              settle(p);
-              return;
-            }
-            if (p.attempts < MAX_ATTEMPTS && enabledRef.current) {
-              setRetryCount((n) => n + 1);
-              attempt();
-            } else {
-              // 諦める: failures へ記録 (banner から一括再送可能)。resolve はする。
-              settle(p);
-              setFailures((prev) =>
-                [{ cmd, ts: Date.now() }, ...prev.filter((f) => f.cmd !== cmd)].slice(0, 20),
-              );
-            }
-          }, ACK_TIMEOUT_MS);
+          // ACK タイムアウトの計時は「実際に送信された時点」から始める。
+          // 待ち行列に滞留している間に計時すると、接続直後のバースト時に
+          // 送る前からタイムアウト → 無駄な再送で再輻輳、となるため。
+          paceSend(cmd)
+            .catch(() => {
+              // シリアル書き込み自体の失敗 (切断等)。再送タイマに任せる。
+            })
+            .then(() => {
+              if (pendingRef.current.get(exp.key) !== p) return; // 破棄/確認済み
+              p.timer = window.setTimeout(() => {
+                if (pendingRef.current.get(exp.key) !== p) return; // 破棄済み
+                // エコーは来なかったが、別の確認手段 (テレメトリ phase 等) で通っていれば成功
+                if (p.exp.checkNow?.()) {
+                  settle(p);
+                  return;
+                }
+                if (p.attempts < MAX_ATTEMPTS && enabledRef.current) {
+                  setRetryCount((n) => n + 1);
+                  attempt();
+                } else {
+                  // 諦める: failures へ記録 (banner から一括再送可能)。resolve はする。
+                  settle(p);
+                  setFailures((prev) =>
+                    [{ cmd, ts: Date.now() }, ...prev.filter((f) => f.cmd !== cmd)].slice(0, 20),
+                  );
+                }
+              }, ACK_TIMEOUT_MS);
+            });
         };
         attempt();
       });
     },
-    [latestRef, settle],
+    [latestRef, settle, paceSend],
   );
 
   // ---- 受信ライン監視: ACK 照合 + FAILSAFE / SAFEGUARD 検知 ----
