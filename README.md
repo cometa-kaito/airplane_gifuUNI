@@ -136,6 +136,7 @@ DISARMED → (arm) → PRELAUNCH → (|a|>launch_g) → LAUNCH (climb-out)
 - **設定はフラッシュ永続化** — `arm`/`disarm`/`land`/`save` で全チューニング値を内蔵フラッシュに保存、ブート時自動復元。PC 無し運用は `autoarm on` (ブートで自動 PRELAUNCH)。
 - **飛行中リセット自動復帰** — ブラウンアウト/WDT 等で飛行中にリセットしても、保存構成で GLIDE を自動再開 (1.5s 姿勢収束ホールド付き)。詳細は `docs/COMMANDS.md` の「永続化・復帰系」。
 - **投擲検知漏れの救済** — `launch_now` で PRELAUNCH から手動で LAUNCH を強制発火できます。
+- **フライト自動計測 + 距離自動最適化** — 着地衝撃を検出すると `[REPORT]` (飛行時間・射出初速・失速・滑空品質) を自動送信。`tools/glide_optimizer.py --port COM12` で「人は同じ引き量で投げるだけ」の glide_pitch/climb_ms/climb_pitch 自動探索ができます。詳細は `docs/COMMANDS.md` の「フライト自動計測と距離最適化」。
 - **LAUNCH 直後の launch_grace (既定 500ms) は PID 出力ゼロホールド** — Madgwick が投擲ショックから復帰する猶予。launch_grace <ms> で調整可 (0 で無効)。
 - **LAUNCH 中のエレベータ feed-forward** — `climb_ff` (既定 +5°) を加算し機首上げを補助。
 - **飛行終了は手動のみ** — `land` (trim リセット付き) / `disarm` (trim 維持) を手動で押す。

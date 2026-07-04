@@ -262,6 +262,33 @@ const float OUTPUT_SAT = 90.0f;
 enum DSource { DSRC_GYRO = 0, DSRC_ERROR = 1 };
 DSource dSource = DSRC_GYRO;   // 既定: gyro 直接（CONTROL_STRATEGY_REPORT P0-3 推奨）
 
+// ---- flight metrics (自動計測 — 距離最適化ループ用) ----
+//   1 フライト分の性能指標を機体側で自動計測し、着地衝撃を検出したら
+//   [REPORT] 行で自動送信する。地上の最適化スクリプト (tools/glide_optimizer.py)
+//   がこれを目的関数にしてパラメータを 1 投ごとに更新する。
+//   ※ 計測専用。フェーズ制御には一切介入しない (land は従来通り手動)。
+struct FlightMetrics {
+  bool     valid;        // 着地まで完了した 1 フライト分か
+  uint32_t tLaunchMs;    // LAUNCH 開始時刻 (0=データなし)
+  uint32_t tGlideMs;     // GLIDE 開始時刻 (0=未到達)
+  uint32_t tImpactMs;    // 着地衝撃時刻 (0=未検出)
+  float    v0;           // 射出初速の推定 [m/s] (射出パルスの積分、±16g レンジ必須)
+  float    pitchErrSq;   // GLIDE 中の (pitch-目標)^2 積算 → RMS
+  float    rollSq;       // GLIDE 中の roll^2 積算 → RMS (翼水平の維持度)
+  float    servoActUs;   // GLIDE 中のサーボ変化量積算 [µs] (舵の動きすぎ = 抗力)
+  uint32_t nGlide;       // GLIDE フレーム数
+  bool     stall;        // 失速検出 (|a|<0.35g が持続 = 弾道状態)
+  float    impactG;      // 着地衝撃の最大 |a| [g]
+};
+FlightMetrics fm = {};
+float    v0Acc = 0.0f;         // PRELAUNCH 中の射出パルス先行積分
+bool     v0Done = false;
+uint8_t  v0LowFrames = 0;
+uint8_t  lowGFrames = 0;       // 失速判定カウンタ
+uint32_t impactCandMs = 0;     // 着地衝撃候補の時刻 (0=なし)
+uint8_t  quietFrames = 0;      // 衝撃後の静穏カウンタ
+bool     reportSent = false;
+
 // ---- command parser ----
 static char cmdBuf[120];
 static size_t cmdLen = 0;
@@ -378,6 +405,23 @@ static void phaseTransition(FlightPhase newPhase) {
       // 飛行中にブラウンアウト/WDT リセットが起きても、次のブートで検出して
       // 保存構成のまま GLIDE を自動再開する。land/disarm で消去される。
       markFlying();
+      // フライト計測の開始 (LAUNCH 進入時にリセット、GLIDE 到達時刻を記録)
+      if (newPhase == PHASE_LAUNCH) {
+        memset(&fm, 0, sizeof(fm));
+        fm.tLaunchMs = millis();
+        fm.v0 = v0Acc;   // PRELAUNCH 中に積み始めた射出パルス先行分を引き継ぐ
+        v0Done = false; v0LowFrames = 0;
+        lowGFrames = 0; impactCandMs = 0; quietFrames = 0;
+        reportSent = false;
+      } else if (fm.tLaunchMs == 0) {
+        // ブート復帰などで直接 GLIDE に入った場合も計測だけは開始する
+        memset(&fm, 0, sizeof(fm));
+        fm.tLaunchMs = millis();
+        v0Done = true;
+        lowGFrames = 0; impactCandMs = 0; quietFrames = 0;
+        reportSent = false;
+      }
+      if (newPhase == PHASE_GLIDE && fm.tGlideMs == 0) fm.tGlideMs = millis();
       break;
     // PHASE_LANDED は削除 (DISARMED と機能的に同じため統合)
     case PHASE_WINDTUNNEL:
@@ -634,6 +678,32 @@ static bool configLoad() {
 }
 
 // =============================================================
+//  flight report (自動計測結果の送信)
+// =============================================================
+//   着地衝撃の自動検出時、または `report` コマンドで送信する。
+//   key=value 形式で、地上の最適化スクリプトがそのままパースできる。
+static void printFlightReport() {
+  if (fm.tLaunchMs == 0) {
+    radioPrintln("[REPORT] no flight data");
+    return;
+  }
+  char buf[120];
+  uint32_t tEnd = fm.tImpactMs ? fm.tImpactMs : millis();
+  float tFlight = (tEnd - fm.tLaunchMs) / 1000.0f;
+  float tGlide  = fm.tGlideMs ? (tEnd - fm.tGlideMs) / 1000.0f : 0.0f;
+  snprintf(buf, sizeof(buf),
+    "[REPORT] t_flight=%.2f t_glide=%.2f v0=%.1f stall=%d impact_g=%.1f done=%d",
+    tFlight, tGlide, fm.v0, fm.stall ? 1 : 0, fm.impactG, fm.valid ? 1 : 0);
+  radioPrintln(buf);
+  float n = fm.nGlide > 0 ? (float)fm.nGlide : 1.0f;
+  snprintf(buf, sizeof(buf),
+    "[REPORT] pitch_rms=%.2f roll_rms=%.2f srv_act=%.2f n_glide=%lu",
+    sqrtf(fm.pitchErrSq / n), sqrtf(fm.rollSq / n), fm.servoActUs / n,
+    (unsigned long)fm.nGlide);
+  radioPrintln(buf);
+}
+
+// =============================================================
 //  status / help
 // =============================================================
 static void printStatus() {
@@ -756,6 +826,9 @@ static void printHelp() {
   radioPrintln("[INFO]   launch_now           force LAUNCH from PRELAUNCH (missed throw rescue)");
   radioPrintln("[INFO]   reboot [force]       software reset (`force` required in flight)");
   radioPrintln("[INFO]   (in-flight reset -> auto GLIDE resume from saved config)");
+  radioPrintln("[INFO] Flight metrics (distance optimization):");
+  radioPrintln("[INFO]   report               print flight metrics (auto-sent on impact detect)");
+  radioPrintln("[INFO]   (t_flight/t_glide/v0/stall/pitch_rms/roll_rms/srv_act)");
 }
 
 // =============================================================
@@ -1146,6 +1219,12 @@ static void handleCommandLine(char* line) {
     return;
   }
 
+  // 直近 / 進行中フライトの計測レポートを表示 (着地検出時には自動送信される)
+  if (iequals(cmd, "report")) {
+    printFlightReport();
+    return;
+  }
+
   // ジャイロバイアス再較正 (機体を静止させて実行)。成功時は即フラッシュへ永続化。
   if (iequals(cmd, "gyrocal")) {
     if (phase == PHASE_LAUNCH || phase == PHASE_GLIDE) {
@@ -1297,7 +1376,10 @@ void setup() {
   servo[2].writeMicroseconds(servoCenterUs[2]);
 
   IMU.settings.gyroRange = 2000;
-  IMU.settings.accelRange = 4;
+  // ±16g: ゴム射出の加速 (実測 10g 超) を飽和させずに積分して初速 v0 を推定する
+  // ため。±4g では射出パルスがクリップして v0 が過小評価される。静止時分解能は
+  // 0.488mg/LSB に粗くなるが姿勢推定には十分。
+  IMU.settings.accelRange = 16;
   // IMU が応答しないままだと WDT で再起動する設計（無限待ちは入れない）
   imuOk = false;
   for (int tries = 0; tries < 10; ++tries) {
@@ -1306,7 +1388,9 @@ void setup() {
     wdtKick();
   }
   IMU.writeRegister(LSM6DS3_ACC_GYRO_CTRL2_G, 0x8C);
-  IMU.writeRegister(LSM6DS3_ACC_GYRO_CTRL1_XL, 0x8A);
+  // CTRL1_XL = 0x86: ODR 1.66kHz (1000) / FS ±16g (01) / AA-BW 100Hz (10)
+  // ※ FS ビットは settings.accelRange=16 (読み値スケール) と必ず一致させること
+  IMU.writeRegister(LSM6DS3_ACC_GYRO_CTRL1_XL, 0x86);
   IMU.writeRegister(LSM6DS3_ACC_GYRO_CTRL7_G, 0x00);
   IMU.writeRegister(LSM6DS3_ACC_GYRO_CTRL8_XL, 0x09);
   filter.begin(MEASURING_FREQ);
@@ -1469,6 +1553,68 @@ void loop() {
       break;
   }
 
+  // ---- フライト自動計測 (最適化用。制御には一切介入しない) ----
+  //   v0: 射出パルスの積分。PRELAUNCH で |a|>1.3g の間先行積算し (トリガ前の
+  //   立ち上がりを取りこぼさない)、静止に戻ったら減衰させて忘れる。LAUNCH 中は
+  //   パルス終了 (|a|<1.3g ×2 フレーム or 700ms) まで積算を続ける。
+  //   重力ベクトル分をスカラー -1.0g で近似しているが、射出加速 10g 超に対し
+  //   誤差は数 % — 正規化用途 (投擲強度の補正) には十分。
+  if (phase == PHASE_PRELAUNCH) {
+    if (aMag > 1.3f) v0Acc += (aMag - 1.0f) * 9.81f * dt;
+    else             v0Acc *= 0.5f;   // 取り回しの振動を素早く忘れる
+  } else if (phase == PHASE_LAUNCH && !v0Done) {
+    if (aMag > 1.3f) {
+      fm.v0 += (aMag - 1.0f) * 9.81f * dt;
+      v0LowFrames = 0;
+    } else if (++v0LowFrames >= 2) {
+      v0Done = true;
+    }
+    if ((uint32_t)(millis() - fm.tLaunchMs) > 700) v0Done = true;
+  } else if (phase == PHASE_DISARMED) {
+    v0Acc = 0.0f;
+  }
+
+  if (phase == PHASE_LAUNCH || phase == PHASE_GLIDE) {
+    // 失速検出: |a|<0.35g の持続 = 揚力を失った弾道状態 (頂点失速の証拠)
+    if (aMag < 0.35f) {
+      if (++lowGFrames >= 5 && !fm.stall) {
+        fm.stall = true;
+        radioPrintln("[METRIC] stall detected");
+      }
+    } else {
+      lowGFrames = 0;
+    }
+    // 着地衝撃の検出 (計測専用): 3g 超の衝撃 → 1.5s の静穏 で着地確定とし
+    // [REPORT] を自動送信。フェーズは一切変えない (land は従来通り手動)。
+    // 静穏にならず 4s 経過したら飛行中の一時衝撃 (突風・急操舵) として破棄。
+    if (!reportSent) {
+      if (impactCandMs == 0) {
+        if (aMag > 3.0f && (uint32_t)(millis() - fm.tLaunchMs) > 1000) {
+          impactCandMs = millis();
+          fm.impactG = aMag;
+          quietFrames = 0;
+        }
+      } else {
+        if (aMag > fm.impactG) fm.impactG = aMag;
+        bool quiet = aMag > 0.7f && aMag < 1.3f
+                  && fabsf(gx) < 30.0f && fabsf(gy) < 30.0f && fabsf(gz) < 30.0f;
+        if (quiet) {
+          if (++quietFrames >= 45) {   // 1.5s @30Hz
+            fm.tImpactMs = impactCandMs;
+            fm.valid = true;
+            reportSent = true;
+            printFlightReport();
+          }
+        } else if ((uint32_t)(millis() - impactCandMs) > 4000) {
+          impactCandMs = 0;
+          quietFrames = 0;
+        } else {
+          quietFrames = 0;
+        }
+      }
+    }
+  }
+
   // ---- attitude zero offset 補正 ----
   //   `zero` コマンドで保存した取付角オフセットを差し引く。
   //   roll/yaw は ±180 へ、pitch は ±90 へ正規化。
@@ -1486,6 +1632,14 @@ void loop() {
     // 差分で 90 を超えた場合は ±90 でクランプして発散を防ぐ)
     if (Q[1] >  90.0f) Q[1] =  90.0f;
     if (Q[1] < -90.0f) Q[1] = -90.0f;
+  }
+
+  // GLIDE 中の滑空品質積算 (zero 補正後の姿勢角で計測 — PID と同じ座標系)
+  if (phase == PHASE_GLIDE) {
+    float pe = Q[1] - glideTargetPitch;
+    fm.pitchErrSq += pe * pe;
+    fm.rollSq     += Q[0] * Q[0];
+    fm.nGlide++;
   }
 
   // ---- attitude safeguard 判定 ----
@@ -1652,6 +1806,10 @@ void loop() {
     // 較正ジョグ中(servoJogUs>=0)は生µsで直接駆動。それ以外は通常の論理角→µs写像。
     int us = (servoJogUs[i] >= 0) ? servoJogUs[i] : servoLogicalToUs(i, logical[i]);
     if (us != lastServoUs[i]) {
+      // 滑空中のサーボ活動量を積算 (舵の動きすぎ = 抗力損失の指標)
+      if (phase == PHASE_GLIDE && lastServoUs[i] >= 0) {
+        fm.servoActUs += (float)abs(us - lastServoUs[i]);
+      }
       servo[i].writeMicroseconds(us);
       lastServoUs[i] = us;
     }

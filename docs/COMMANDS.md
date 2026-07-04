@@ -112,6 +112,39 @@ armed (PRELAUNCH) 中のリセットは PRELAUNCH に自動復帰し、そのま
 
 ブート時には毎回 `[BOOT] resetreas=0x… WDT/SOFT/PIN/POWERON cfg=loaded/defaults` が出力されるので、「なぜ再起動したのか」を必ず追跡できる。`status` の `[STATUS] cfg=… autoarm=… imu=… marker=…` 行で永続化状態と IMU 健全性を確認できる。
 
+## フライト自動計測と距離最適化 (2026-07 以降のファーム)
+
+機体は 1 フライトごとの性能指標を自動計測し、**着地衝撃 (3g 超 → 1.5 秒静穏) を検出すると `[REPORT]` を無線で自動送信**する（計測専用 — フェーズ制御には介入せず、`land` は従来通り手動）。
+
+| 入力 | 動作 |
+|---|---|
+| `report` | 直近 / 進行中フライトの計測値を表示（着地検出時は自動送信されるので通常は不要） |
+
+レポート内容（key=value 形式、2 行）:
+
+```
+[REPORT] t_flight=6.42 t_glide=4.90 v0=13.2 stall=0 impact_g=8.4 done=1
+[REPORT] pitch_rms=2.1 roll_rms=3.4 srv_act=1.25 n_glide=147
+```
+
+| キー | 意味 |
+|---|---|
+| `t_flight` / `t_glide` | LAUNCH からの総飛行時間 / GLIDE 滞在時間 [s] |
+| `v0` | **射出初速の推定** [m/s]（射出パルスの加速度積分。±16g レンジ化により飽和なし。投擲強度のばらつき確認・正規化に使う） |
+| `stall` | 失速検出（\|a\|<0.35g が持続 = 弾道状態。climb 設定が攻めすぎのサイン） |
+| `impact_g` | 着地衝撃の最大加速度 [g] |
+| `pitch_rms` / `roll_rms` | GLIDE 中の姿勢誤差 RMS [deg]（制御品質。roll は直進性） |
+| `srv_act` | GLIDE 中のサーボ活動量 [µs/フレーム]（舵の動きすぎ = 抗力損失の指標） |
+
+### 自動最適化ループ (`tools/glide_optimizer.py`)
+
+```powershell
+python tools\glide_optimizer.py --port COM12          # 本番 (人は同じ引き量で投げるだけ)
+python tools\glide_optimizer.py --port COM12 --test   # ベンチ動作確認 (launch_now 疑似飛行)
+```
+
+glide_pitch → climb_ms → climb_pitch の順にグリッド探索し (計 13〜16 投)、最後に**時間最適 (最小沈下) → 距離最適 (最良滑空) のバイアス補正**として glide_pitch を `--debias` 度 (既定 1.5) 下げて確認、最良パラメータを `save` でフラッシュへ永続化する。各投の詳細は `logs/optimizer_*.csv` に自動保存。滞空時間 proxy の理論限界により、到達点は理論最大距離のおよそ 9 割強（真の距離を測るセンサが無いため最終数 % は検証不能）。
+
 ### 取付角キャリブレーション (`zero`)
 
 機体に IMU を取り付けた際、機体が水平に置かれていても **IMU の Z 軸が真上を向くとは限らない**ため、Madgwick の roll/pitch/yaw 出力が 0 にならない (例: roll=+2.5°, pitch=-1.8°)。このまま PID をかけると、機体水平の状態がエラー扱いされて余計な舵を打ってしまう。
