@@ -49,6 +49,7 @@
 //    launch_g <g>       投擲検知しきい値 (既定 2.5g)
 //    launch_grace <ms>  投擲直後の PID ゼロホールド時間 (既定 500ms、この間 FF のみ)
 //    wt                 風洞試験モード遷移 (PID 常時 ON、safeguards 抑制)
+//    gyrocal            ジャイロゼロ点の再較正 (静止必須。起動時にも自動実行)
 //    save / wipe        全チューニング値の内蔵フラッシュ保存 / 消去
 //    autoarm on|off     ブート時自動 PRELAUNCH (地上局レス運用)
 //    launch_now         PRELAUNCH から LAUNCH を手動強制 (投擲検知漏れ救済)
@@ -429,6 +430,43 @@ static inline void wdtKick() {}
 #endif
 
 // =============================================================
+//  gyro bias calibration
+// =============================================================
+//   LSM6DS3 のジャイロは静止時でも数 deg/s のゼロ点オフセットを持つ
+//   (実測: gy≈-3.2, gz≈-3.9 deg/s)。放置すると:
+//     (1) Madgwick の yaw が定速ドリフトする (~5°/s。6軸なので yaw は補正源が無い)
+//     (2) roll/pitch も accel 補正と綱引きしてゆっくり揺れる
+//     (3) d_source=GYRO の D 項に定常オフセットが乗る
+//   そこで静止状態で実測したバイアスを全読み値 (Madgwick / D項 / テレメトリ)
+//   から差し引く。較正は静止判定付き: サンプル中の振れ幅が閾値を超えたら
+//   失敗として既存バイアス (フラッシュ保存値) を維持する。
+//   起動時に自動実行 (飛行中リセット復帰時は機体が動いているので実行しない)。
+//   手動再較正は `gyrocal` コマンド (成功時は即フラッシュ保存)。
+float gyroBias[3] = {0.0f, 0.0f, 0.0f};
+
+static bool calibrateGyroBias() {
+  const int   kSamples = 60;          // 10ms 間隔 × 60 = 600ms
+  const float kSpreadLimit = 4.0f;    // 静止判定: 各軸の振れ幅上限 [deg/s]
+  float sum[3] = {0, 0, 0};
+  float mn[3] = {1e9f, 1e9f, 1e9f}, mx[3] = {-1e9f, -1e9f, -1e9f};
+  for (int s = 0; s < kSamples; s++) {
+    float g[3] = { IMU.readFloatGyroX(), IMU.readFloatGyroY(), IMU.readFloatGyroZ() };
+    for (int i = 0; i < 3; i++) {
+      sum[i] += g[i];
+      if (g[i] < mn[i]) mn[i] = g[i];
+      if (g[i] > mx[i]) mx[i] = g[i];
+    }
+    wdtKick();
+    delay(10);
+  }
+  for (int i = 0; i < 3; i++) {
+    if (mx[i] - mn[i] > kSpreadLimit) return false;  // 動いている → 較正しない
+  }
+  for (int i = 0; i < 3; i++) gyroBias[i] = sum[i] / (float)kSamples;
+  return true;
+}
+
+// =============================================================
 //  settings persistence + in-flight reset recovery (internal flash)
 // =============================================================
 //   「何があっても飛ぶ」ための永続化層:
@@ -445,7 +483,7 @@ static inline void wdtKick() {}
 #define CFG_FLASH_PAGE   4096UL
 #define CFG_MARKER_ADDR  (CFG_FLASH_ADDR + CFG_FLASH_PAGE - 8UL)
 #define CFG_MAGIC        0x474C4431UL   // "GLD1"
-#define CFG_VERSION      1
+#define CFG_VERSION      2              // v2: gyroBias[3] 追加 (v1 保存データは破棄される)
 #define FLY_MAGIC        0x464C5921UL   // "FLY!"
 
 struct PersistConfig {
@@ -462,6 +500,7 @@ struct PersistConfig {
   uint32_t climbMs, launchGraceMs;
   float    climbTargetPitch, glideTargetPitch, climbElevatorFF;
   float    attitudeOffset[3];
+  float    gyroBias[3];
   uint8_t  servoReverse[3];
   uint8_t  attitudeOffsetActive;
   uint8_t  dSource;
@@ -536,6 +575,7 @@ static void configSave(uint8_t armedState) {
   c.climbTargetPitch = climbTargetPitch; c.glideTargetPitch = glideTargetPitch;
   c.climbElevatorFF = climbElevatorFF;
   memcpy(c.attitudeOffset, attitudeOffset, sizeof(attitudeOffset));
+  memcpy(c.gyroBias, gyroBias, sizeof(gyroBias));
   c.attitudeOffsetActive = attitudeOffsetActive ? 1 : 0;
   c.dSource   = (uint8_t)dSource;
   c.autoArm   = autoArm ? 1 : 0;
@@ -582,6 +622,10 @@ static bool configLoad() {
   glideTargetPitch  = clipf(c.glideTargetPitch, -20.0f, 30.0f);
   climbElevatorFF   = clipf(c.climbElevatorFF, -90.0f, 90.0f);
   memcpy(attitudeOffset, c.attitudeOffset, sizeof(attitudeOffset));
+  for (int i = 0; i < 3; i++) {
+    // ジャイロバイアスの妥当性チェック (LSM6DS3 の現実的なゼロ点は ±10 deg/s 以内)
+    gyroBias[i] = (fabsf(c.gyroBias[i]) <= 10.0f) ? c.gyroBias[i] : 0.0f;
+  }
   attitudeOffsetActive = c.attitudeOffsetActive != 0;
   dSource        = (c.dSource == 1) ? DSRC_ERROR : DSRC_GYRO;
   autoArm        = c.autoArm != 0;
@@ -643,6 +687,10 @@ static void printStatus() {
     imuOk ? "ok" : "FAIL",
     flyMarkerSet() ? "FLYING" : "clear");
   radioPrintln(buf);
+  snprintf(buf, sizeof(buf),
+    "[STATUS] gyro_bias=[%.2f,%.2f,%.2f]",
+    gyroBias[0], gyroBias[1], gyroBias[2]);
+  radioPrintln(buf);
   // サーボ較正 (subtrim + エンドポイント, µs)。ch 0=右エルロン/1=左エルロン/2=エレベータ
   for (int i = 0; i < 3; i++) {
     snprintf(buf, sizeof(buf),
@@ -682,6 +730,7 @@ static void printHelp() {
   radioPrintln("[INFO]   dfilter <alpha>    D-term LPF coefficient 0..0.99 (0 = raw, 0.85 default)");
   radioPrintln("[INFO]   zero               capture current attitude as 0deg reference");
   radioPrintln("[INFO]   unzero             clear zero offset (use raw IMU)");
+  radioPrintln("[INFO]   gyrocal            re-measure gyro zero bias (keep still; auto at boot)");
   radioPrintln("[INFO] Flight Phase Machine (autonomous glide):");
   radioPrintln("[INFO]   arm                  PRELAUNCH (wait throw, MANUAL hold)");
   radioPrintln("[INFO]   disarm               back to DISARMED (cancel flight)");
@@ -1097,6 +1146,25 @@ static void handleCommandLine(char* line) {
     return;
   }
 
+  // ジャイロバイアス再較正 (機体を静止させて実行)。成功時は即フラッシュへ永続化。
+  if (iequals(cmd, "gyrocal")) {
+    if (phase == PHASE_LAUNCH || phase == PHASE_GLIDE) {
+      radioPrintln("[INFO] gyrocal: not in flight");
+      return;
+    }
+    radioPrintln("[GYROCAL] sampling 0.6s - keep aircraft still");
+    if (calibrateGyroBias()) {
+      char buf[80];
+      snprintf(buf, sizeof(buf), "[GYROCAL] bias=[%.2f,%.2f,%.2f] deg/s (saved)",
+               gyroBias[0], gyroBias[1], gyroBias[2]);
+      radioPrintln(buf);
+      configSave(phase == PHASE_PRELAUNCH ? 1 : 0);
+    } else {
+      radioPrintln("[GYROCAL] FAILED (motion detected) - bias unchanged");
+    }
+    return;
+  }
+
   // ---- 永続化 / 復帰系 (「何があっても飛ぶ」) ----
   if (iequals(cmd, "save")) {
     if (phase == PHASE_LAUNCH || phase == PHASE_GLIDE) {
@@ -1252,6 +1320,21 @@ void setup() {
   //   暫定で beta を効果的に下げるには、updateIMU を低レート (=lessen integration)
   //   で呼ぶ手があるが、本機は 30Hz 固定なので適用不可。**TODO**: beta 設定機能。
 
+  // ---- ジャイロバイアス起動時自動較正 ----
+  //   静止していればゼロ点を実測 (600ms)。飛行中リセット復帰時 (マーカあり) は
+  //   機体が動いているため実行せず、フラッシュ保存済みのバイアスをそのまま使う。
+  //   静止判定に失敗した場合も保存値を維持する。
+  if (imuOk && !flyMarkerSet()) {
+    if (calibrateGyroBias()) {
+      char gbuf[80];
+      snprintf(gbuf, sizeof(gbuf), "[GYROCAL] boot bias=[%.2f,%.2f,%.2f] deg/s",
+               gyroBias[0], gyroBias[1], gyroBias[2]);
+      radioPrintln(gbuf);
+    } else {
+      radioPrintln("[GYROCAL] boot skipped (motion) - using saved bias");
+    }
+  }
+
   prevUs = micros();
   // 起動直後は受信履歴ゼロ → 即フェイルセーフ発動を防ぐため初期化
   lastUplinkMs = millis();
@@ -1341,9 +1424,10 @@ void loop() {
   float ax = IMU.readFloatAccelX();
   float ay = IMU.readFloatAccelY();
   float az = IMU.readFloatAccelZ();
-  float gx = IMU.readFloatGyroX();
-  float gy = IMU.readFloatGyroY();
-  float gz = IMU.readFloatGyroZ();
+  // ジャイロは較正済みバイアスを差し引いてから使う (Madgwick / D項 / テレメトリ共通)
+  float gx = IMU.readFloatGyroX() - gyroBias[0];
+  float gy = IMU.readFloatGyroY() - gyroBias[1];
+  float gz = IMU.readFloatGyroZ() - gyroBias[2];
   filter.updateIMU(gx, gy, gz, ax, ay, az);
 
   float Q[3];

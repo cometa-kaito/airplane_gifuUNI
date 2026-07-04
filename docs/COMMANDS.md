@@ -71,6 +71,7 @@
 | `dfilter <alpha>` | D 項に掛ける 1次 IIR LPF 係数 (0..0.99)。**既定 0.85** (30Hz サンプリングで cutoff ~0.84Hz)。**0 で生 D**、大きいほど滑らかになる代わりに応答が遅延。サーボの「ぴくぴく」抑制に使用 |
 | `zero` | **取付角キャリブレーション**: 今の Madgwick 出力 (roll/pitch/yaw) を「0°」基準として記録。以降の PID / safeguard / テレメトリ はこの基準からの相対角になる。RAM 保持 (再起動でクリア)。フライト前に機体を水平に置いて実行 |
 | `unzero` | `zero` で設定したオフセットを解除して生 IMU 出力に戻す |
+| `gyrocal` | **ジャイロゼロ点バイアスの再較正** (0.6 秒、機体静止必須)。LSM6DS3 は静止時でも数 deg/s のオフセットを持ち、放置すると yaw が ~5°/s でドリフトし roll/pitch もゆっくり揺れる。較正値は全読み値 (Madgwick / D 項 / テレメトリ) から差し引かれ、成功時は即フラッシュ保存。**起動時にも自動実行**される (静止判定付き。動いていれば保存値を維持。飛行中リセット復帰時は実行しない)。`status` の `gyro_bias=[…]` で確認可 |
 | `arm` | **フェーズマシン開始**: DISARMED → PRELAUNCH。`|a|>launch_g` の連続検出を待ち、検知すると LAUNCH → GLIDE へ自動遷移。Arm 中は failsafe が抑制される |
 | `disarm` | DISARMED に戻す。**trim は維持**（PRELAUNCH キャンセル時にユーザ設定値を守る用途、緊急脱出にも） |
 | `land` | **飛行終了**: trim を 0 にリセットしてから DISARMED に戻す。GLIDE / LAUNCH から終わらせる主要コマンド（旧 PHASE_LANDED は DISARMED に統合済） |
