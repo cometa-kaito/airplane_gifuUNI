@@ -132,6 +132,10 @@ DISARMED → (arm) → PRELAUNCH → (|a|>launch_g) → LAUNCH (climb-out)
 旧 `PHASE_LANDED` (フェーズ 4) は DISARMED と機能的に同じため統合済 (`land` コマンドが trim=0 リセット付きで DISARMED に戻す形に変更)。`disarm` は trim を維持して DISARMED へ。
 
 - **armed 中 (DISARMED 以外) は failsafe 抑制** — 地上局接続が落ちても飛行を継続できます。
+- **tilt safeguard (`safe_angle`) は飛行中 (LAUNCH/GLIDE) 抑制** — 空中で PID を切る = 墜落のため。地上ベンチ AUTO テスト時の保護として機能します。
+- **設定はフラッシュ永続化** — `arm`/`disarm`/`land`/`save` で全チューニング値を内蔵フラッシュに保存、ブート時自動復元。PC 無し運用は `autoarm on` (ブートで自動 PRELAUNCH)。
+- **飛行中リセット自動復帰** — ブラウンアウト/WDT 等で飛行中にリセットしても、保存構成で GLIDE を自動再開 (1.5s 姿勢収束ホールド付き)。詳細は `docs/COMMANDS.md` の「永続化・復帰系」。
+- **投擲検知漏れの救済** — `launch_now` で PRELAUNCH から手動で LAUNCH を強制発火できます。
 - **LAUNCH 直後の launch_grace (既定 500ms) は PID 出力ゼロホールド** — Madgwick が投擲ショックから復帰する猶予。launch_grace <ms> で調整可 (0 で無効)。
 - **LAUNCH 中のエレベータ feed-forward** — `climb_ff` (既定 +5°) を加算し機首上げを補助。
 - **飛行終了は手動のみ** — `land` (trim リセット付き) / `disarm` (trim 維持) を手動で押す。

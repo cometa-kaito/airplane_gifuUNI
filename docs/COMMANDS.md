@@ -66,7 +66,7 @@
 | `tlm off` | テレメトリ送信を停止（コマンド応答だけになる） |
 | `ping` | ハートビート。応答を返さず `lastUplinkMs` だけ更新する。WebUI が ~300ms 毎に自動送信し `failsafe` 発火を防ぐ |
 | `failsafe <ms>` | アップリンク途絶でフェイルセーフ発動するまでの ms を設定（既定 1500、`0` で無効） |
-| `safe_angle <deg>` | 姿勢角しきい値（`|roll|` または `|pitch|` がこれを超えると AUTO→MANUAL に強制復帰）。既定 60、`0` で無効、**`>=180` も無効 (Madgwick の境界誤動作を避けるため)** |
+| `safe_angle <deg>` | 姿勢角しきい値（`|roll|` または `|pitch|` がこれを超えると AUTO→MANUAL に強制復帰）。既定 60、`0` で無効、**`>=180` も無効 (Madgwick の境界誤動作を避けるため)**。**飛行中 (LAUNCH/GLIDE) と風洞 (WT) では抑制される** — 空中で PID を切る = 制御放棄 = 墜落のため。地上ベンチで AUTO を試すときの保護として機能する |
 | `tilt_limit <deg>` | `safe_angle` のエイリアス |
 | `dfilter <alpha>` | D 項に掛ける 1次 IIR LPF 係数 (0..0.99)。**既定 0.85** (30Hz サンプリングで cutoff ~0.84Hz)。**0 で生 D**、大きいほど滑らかになる代わりに応答が遅延。サーボの「ぴくぴく」抑制に使用 |
 | `zero` | **取付角キャリブレーション**: 今の Madgwick 出力 (roll/pitch/yaw) を「0°」基準として記録。以降の PID / safeguard / テレメトリ はこの基準からの相対角になる。RAM 保持 (再起動でクリア)。フライト前に機体を水平に置いて実行 |
@@ -83,7 +83,33 @@
 | `glide_pitch <deg>` | GLIDE 中の目標 pitch（最良滑空）。既定 +3°、範囲 -20..30 |
 | `d_source <gyro\|error>` | D 項の計算ソース。**既定 gyro**（Lesson17 推奨。ジャイロ生値を直接使用）。`error` で従来の `(e-prevE)/dt + dfilter` に戻る |
 | 削除: `landed_g` / `landed_gyro` / `landed_ms` / `glide_timeout` / `landed_impact_g` | **auto-LANDED 検出を全廃したため削除**。送ると `[INFO] auto-LANDED removed. Use \`land\`...` を返す（古い localStorage 互換のため受理だけする） |
-| `wt` / `wt_mode` / `windtunnel` | **風洞試験モードへ遷移** (PHASE_WINDTUNNEL)。PID 常時 ON、target は `target p`/`target r` でユーザ操作。tilt safeguard・failsafe・climb_ff すべて抑制。`disarm` で抜ける |
+| `wt` / `wt_mode` / `windtunnel` | **風洞試験モードへ遷移** (PHASE_WINDTUNNEL)。PID 常時 ON、target は `target p`/`target r` でユーザ操作。tilt safeguard・failsafe・climb_ff すべて抑制。`disarm` で抜ける。**DISARMED からのみ受理** (飛行中の誤入力ガード) |
+
+## 永続化・復帰系（「何があっても飛ぶ」、2026-07 以降のファーム）
+
+全チューニング値（ゲイン・trim・サーボ較正・フェーズ設定・zero オフセット等）を nRF52840 の内蔵フラッシュへ保存し、ブート時に自動復元する。**地上局 PC が現地で使えなくても、較正済み状態で電源投入→投擲だけで飛べる**ようにするための機構。
+
+| 入力 | 動作 |
+|---|---|
+| `save` | 全チューニング値をフラッシュへ保存（`[SAVE] config -> flash`）。**`arm` / `disarm` / `land` 時にも自動保存される**ので通常は明示的に打つ必要はない。飛行中 (LAUNCH/GLIDE) は拒否（ページ消去 ~85ms がループを止めるため） |
+| `wipe` | 保存済み設定を消去。RAM の現在値はそのまま、**次回ブートからコンパイル時デフォルト**に戻る |
+| `autoarm on\|off` | **ブート時に自動で PRELAUNCH に入る**（既定 off、設定は即永続化）。PC 無しで「電源 ON → 投げる → 飛ぶ」を実現する。ベンチ作業中に 2.5g 超の衝撃を与えると LAUNCH が発火する点に注意 |
+| `launch_now` / `launch_force` | **投擲検知漏れの救済**: PRELAUNCH から LAUNCH を手動強制発火。弱い投擲で `launch_g` に届かず trim 滑空になった場合、uplink が生きていればこれで空中から PID を起動できる |
+| `reboot [force]` | ソフトリセット。飛行中 (LAUNCH/GLIDE) は誤爆防止のため `reboot force` のみ受理 |
+
+### 飛行中リセットからの自動復帰
+
+LAUNCH 進入時に「飛行中マーカ」をフラッシュへ記録する（事前消去済みスロットへの 1 ワード書き込み ≈ 41µs なので、飛行中の制御ループを乱さない）。飛行中に**サーボ負荷によるブラウンアウト・WDT・クラッシュ等でリセットが起きても**、ブート時にマーカを検出して:
+
+1. 保存済み構成（trim・ゲイン・較正）を復元
+2. **GLIDE フェーズを AUTO/PID で自動再開**（`[RESUME] in-flight reset detected -> GLIDE resume`）
+3. 最初の 1.5 秒は PID ゼロホールド（サーボ = 復元 trim）で Madgwick の姿勢収束を待ってから PID 投入
+
+マーカは `land` / `disarm` で消去される。**飛行後に `land` を押さず電源を抜いた場合、次回電源投入時に GLIDE で起動する**（ベンチでサーボが PID で動き出す）ので、`disarm` か `land` を送れば解除される。
+
+armed (PRELAUNCH) 中のリセットは PRELAUNCH に自動復帰し、そのまま投擲待ちを継続する。
+
+ブート時には毎回 `[BOOT] resetreas=0x… WDT/SOFT/PIN/POWERON cfg=loaded/defaults` が出力されるので、「なぜ再起動したのか」を必ず追跡できる。`status` の `[STATUS] cfg=… autoarm=… imu=… marker=…` 行で永続化状態と IMU 健全性を確認できる。
 
 ### 取付角キャリブレーション (`zero`)
 

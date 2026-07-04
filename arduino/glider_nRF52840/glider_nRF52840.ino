@@ -49,6 +49,17 @@
 //    launch_g <g>       投擲検知しきい値 (既定 2.5g)
 //    launch_grace <ms>  投擲直後の PID ゼロホールド時間 (既定 500ms、この間 FF のみ)
 //    wt                 風洞試験モード遷移 (PID 常時 ON、safeguards 抑制)
+//    save / wipe        全チューニング値の内蔵フラッシュ保存 / 消去
+//    autoarm on|off     ブート時自動 PRELAUNCH (地上局レス運用)
+//    launch_now         PRELAUNCH から LAUNCH を手動強制 (投擲検知漏れ救済)
+//    reboot [force]     ソフトリセット (飛行中は force 必須)
+//
+//  堅牢化 (「何があっても飛ぶ」):
+//    - arm/disarm/land/save で全設定をフラッシュへ永続化、ブート時自動復元
+//    - LAUNCH 進入時に飛行中マーカ書込 → 飛行中のブラウンアウト/WDT リセット後、
+//      ブートで検出して GLIDE を自動再開 (1.5s は姿勢収束待ちゼロホールド)
+//    - tilt safeguard は飛行中 (LAUNCH/GLIDE) 抑制 — 空中で PID を切らない
+//    - NaN/Inf 入力の拒否、異常 dt のクランプ、IMU 初期化失敗の明示警告
 // =============================================================
 
 #include <LSM6DS3.h>
@@ -59,6 +70,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stddef.h>   // offsetof (settings persistence)
 #include <math.h>     // sqrtf, fabsf (launch detection / tilt safeguard)
 
 // nRF52840 内蔵ウォッチドッグ（ループブロック時の暴走防止）
@@ -286,6 +298,9 @@ static bool parseFloat(const char* s, float* out) {
   char* endp = nullptr;
   float v = strtof(s, &endp);
   if (endp == s) return false;
+  // "nan"/"inf" も strtof は受理してしまう。NaN がゲインや目標角に一度でも
+  // 入ると PID 出力全体が NaN に汚染されサーボ出力が不定になるため拒否する。
+  if (isnan(v) || isinf(v)) return false;
   *out = v;
   return true;
 }
@@ -358,6 +373,10 @@ static void phaseTransition(FlightPhase newPhase) {
       baseMode = MODE_AUTO;
       autoSub  = SUB_PID;
       tiltSafeguardTriggered = false;
+      // 「飛行中」マーカをフラッシュへ記録 (消去済スロットへ 1 ワード書込のみ)。
+      // 飛行中にブラウンアウト/WDT リセットが起きても、次のブートで検出して
+      // 保存構成のまま GLIDE を自動再開する。land/disarm で消去される。
+      markFlying();
       break;
     // PHASE_LANDED は削除 (DISARMED と機能的に同じため統合)
     case PHASE_WINDTUNNEL:
@@ -410,6 +429,167 @@ static inline void wdtKick() {}
 #endif
 
 // =============================================================
+//  settings persistence + in-flight reset recovery (internal flash)
+// =============================================================
+//   「何があっても飛ぶ」ための永続化層:
+//     - `save` / `arm` / `disarm` / `land` で全チューニング値を内蔵フラッシュへ保存
+//     - ブート時に自動復元 → 地上局 (PC) が死んでいても較正済み状態で飛べる
+//     - LAUNCH 進入時に「飛行中マーカ」を書く。事前消去済みスロットへの
+//       1 ワード書き込み (~41µs) なので、飛行中にページ消去 (~85ms) は発生しない
+//     - 飛行中のリセット (サーボ負荷ブラウンアウト / WDT / クラッシュ) 後は、
+//       ブートでマーカを検出して保存構成のまま GLIDE を自動再開する
+//   配置: 0xED000。mbed リンカのアプリ領域 (0x27000..0xED000) の直後、
+//   Adafruit ブートローダ (0xF4000) の手前で、どちらとも衝突しない予約ページ。
+//   ページ消去は arm/disarm/land/save/wipe 時のみ (通常すべて地上)。
+#define CFG_FLASH_ADDR   0x000ED000UL
+#define CFG_FLASH_PAGE   4096UL
+#define CFG_MARKER_ADDR  (CFG_FLASH_ADDR + CFG_FLASH_PAGE - 8UL)
+#define CFG_MAGIC        0x474C4431UL   // "GLD1"
+#define CFG_VERSION      1
+#define FLY_MAGIC        0x464C5921UL   // "FLY!"
+
+struct PersistConfig {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t size;
+  float    Kp[3], Ki[3], Kd[3];
+  float    target[3], trimDeg[3];
+  float    aileronMixL, aileronMixR;
+  int32_t  servoMinUs[3], servoCenterUs[3], servoMaxUs[3];
+  float    dFilterAlpha, tiltSafeguardDeg;
+  uint32_t failsafeTimeoutMs;
+  float    launchAccelG;
+  uint32_t climbMs, launchGraceMs;
+  float    climbTargetPitch, glideTargetPitch, climbElevatorFF;
+  float    attitudeOffset[3];
+  uint8_t  servoReverse[3];
+  uint8_t  attitudeOffsetActive;
+  uint8_t  dSource;
+  uint8_t  autoArm;
+  uint8_t  armedState;    // 0=IDLE / 1=ARMED (armed のまま電源断→次回ブートで再武装)
+  uint8_t  reserved;
+  uint32_t crc;           // 先頭〜crc 直前までの CRC32
+};
+
+bool     autoArm = false;           // on: ブート時に自動 PRELAUNCH (PC レス運用)
+bool     cfgLoadedAtBoot = false;   // ブート時にフラッシュ設定を復元できたか
+bool     imuOk = false;             // IMU 初期化成否 (FAIL のまま飛ばさないこと)
+uint8_t  bootArmedState = 0;        // フラッシュに保存されていた armed 状態
+bool     resumeHoldActive = false;  // リセット復帰直後の PID ゼロホールド中
+uint32_t resumeHoldStartMs = 0;
+const uint32_t RESUME_HOLD_MS = 1500;  // Madgwick が実姿勢へ収束するまでの猶予
+
+static uint32_t crc32calc(const uint8_t* d, size_t n) {
+  uint32_t c = 0xFFFFFFFFUL;
+  for (size_t i = 0; i < n; i++) {
+    c ^= d[i];
+    for (int b = 0; b < 8; b++) c = (c >> 1) ^ (0xEDB88320UL & (0UL - (c & 1)));
+  }
+  return c ^ 0xFFFFFFFFUL;
+}
+
+static inline void nvmcWait() { while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {} }
+
+static void flashErasePage(uint32_t addr) {
+  NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Een << NVMC_CONFIG_WEN_Pos; nvmcWait();
+  NRF_NVMC->ERASEPAGE = addr; nvmcWait();
+  NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos; nvmcWait();
+}
+
+static void flashProgramWords(uint32_t addr, const uint32_t* src, uint32_t nwords) {
+  NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Wen << NVMC_CONFIG_WEN_Pos; nvmcWait();
+  volatile uint32_t* dst = (volatile uint32_t*)addr;
+  for (uint32_t i = 0; i < nwords; i++) { dst[i] = src[i]; nvmcWait(); }
+  NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos; nvmcWait();
+}
+
+static inline bool flyMarkerSet() {
+  return *(const volatile uint32_t*)CFG_MARKER_ADDR == FLY_MAGIC;
+}
+
+// LAUNCH/GLIDE 進入時に呼ぶ「飛行中マーカ」書き込み。消去済みスロットへの
+// 1 ワード書込のみ (~41µs) で、制御ループを乱さない。configSave() で消える。
+static void markFlying() {
+  if (*(const volatile uint32_t*)CFG_MARKER_ADDR != 0xFFFFFFFFUL) return;  // 書込済み
+  const uint32_t v = FLY_MAGIC;
+  flashProgramWords(CFG_MARKER_ADDR, &v, 1);
+}
+
+// 全チューニング値をフラッシュへ保存。ページ消去 (~85ms) でループが1回止まるため
+// 地上で呼ぶこと (arm/disarm/land/save/autoarm 経由のみ。飛行中コマンドでは呼ばない)。
+static void configSave(uint8_t armedState) {
+  PersistConfig c = {};
+  c.magic = CFG_MAGIC; c.version = CFG_VERSION; c.size = (uint16_t)sizeof(c);
+  memcpy(c.Kp, Kp, sizeof(Kp)); memcpy(c.Ki, Ki, sizeof(Ki)); memcpy(c.Kd, Kd, sizeof(Kd));
+  memcpy(c.target, target, sizeof(target));
+  memcpy(c.trimDeg, trimDeg, sizeof(trimDeg));
+  c.aileronMixL = aileronMixL; c.aileronMixR = aileronMixR;
+  for (int i = 0; i < 3; i++) {
+    c.servoMinUs[i]    = servoMinUs[i];
+    c.servoCenterUs[i] = servoCenterUs[i];
+    c.servoMaxUs[i]    = servoMaxUs[i];
+    c.servoReverse[i]  = servoReverse[i] ? 1 : 0;
+  }
+  c.dFilterAlpha = dFilterAlpha; c.tiltSafeguardDeg = tiltSafeguardDeg;
+  c.failsafeTimeoutMs = failsafeTimeoutMs;
+  c.launchAccelG = launchAccelG; c.climbMs = climbMs; c.launchGraceMs = launchGraceMs;
+  c.climbTargetPitch = climbTargetPitch; c.glideTargetPitch = glideTargetPitch;
+  c.climbElevatorFF = climbElevatorFF;
+  memcpy(c.attitudeOffset, attitudeOffset, sizeof(attitudeOffset));
+  c.attitudeOffsetActive = attitudeOffsetActive ? 1 : 0;
+  c.dSource   = (uint8_t)dSource;
+  c.autoArm   = autoArm ? 1 : 0;
+  c.armedState = armedState;
+  c.crc = crc32calc((const uint8_t*)&c, offsetof(PersistConfig, crc));
+
+  flashErasePage(CFG_FLASH_ADDR);
+  uint32_t words[(sizeof(PersistConfig) + 3) / 4];
+  memset(words, 0xFF, sizeof(words));
+  memcpy(words, &c, sizeof(c));
+  flashProgramWords(CFG_FLASH_ADDR, words, sizeof(words) / 4);
+
+  char buf[64];
+  snprintf(buf, sizeof(buf), "[SAVE] config -> flash (%uB, armed=%u)",
+           (unsigned)sizeof(c), (unsigned)armedState);
+  radioPrintln(buf);
+}
+
+// ブート時に呼ぶ。magic/version/size/CRC 検証 OK ならグローバルへ反映して true。
+static bool configLoad() {
+  PersistConfig c;
+  memcpy(&c, (const void*)CFG_FLASH_ADDR, sizeof(c));
+  if (c.magic != CFG_MAGIC || c.version != CFG_VERSION || c.size != sizeof(c)) return false;
+  if (c.crc != crc32calc((const uint8_t*)&c, offsetof(PersistConfig, crc))) return false;
+
+  memcpy(Kp, c.Kp, sizeof(Kp)); memcpy(Ki, c.Ki, sizeof(Ki)); memcpy(Kd, c.Kd, sizeof(Kd));
+  memcpy(target, c.target, sizeof(target));
+  memcpy(trimDeg, c.trimDeg, sizeof(trimDeg));
+  aileronMixL = c.aileronMixL; aileronMixR = c.aileronMixR;
+  for (int i = 0; i < 3; i++) {
+    // 較正値は絶対レンジでクランプ (壊れた保存値でサーボを機械端に叩きつけない)
+    servoMinUs[i]    = (int)clipf((float)c.servoMinUs[i],    (float)SERVO_US_ABS_MIN, (float)SERVO_US_ABS_MAX);
+    servoCenterUs[i] = (int)clipf((float)c.servoCenterUs[i], (float)SERVO_US_ABS_MIN, (float)SERVO_US_ABS_MAX);
+    servoMaxUs[i]    = (int)clipf((float)c.servoMaxUs[i],    (float)SERVO_US_ABS_MIN, (float)SERVO_US_ABS_MAX);
+    servoReverse[i]  = c.servoReverse[i] != 0;
+  }
+  dFilterAlpha      = clipf(c.dFilterAlpha, 0.0f, 0.99f);
+  tiltSafeguardDeg  = clipf(c.tiltSafeguardDeg, 0.0f, 180.0f);
+  failsafeTimeoutMs = c.failsafeTimeoutMs;
+  launchAccelG      = clipf(c.launchAccelG, 1.0f, 8.0f);
+  climbMs           = (c.climbMs < 200 || c.climbMs > 10000) ? 1500 : c.climbMs;
+  launchGraceMs     = (c.launchGraceMs > 5000) ? 500 : c.launchGraceMs;
+  climbTargetPitch  = clipf(c.climbTargetPitch, -45.0f, 60.0f);
+  glideTargetPitch  = clipf(c.glideTargetPitch, -20.0f, 30.0f);
+  climbElevatorFF   = clipf(c.climbElevatorFF, -90.0f, 90.0f);
+  memcpy(attitudeOffset, c.attitudeOffset, sizeof(attitudeOffset));
+  attitudeOffsetActive = c.attitudeOffsetActive != 0;
+  dSource        = (c.dSource == 1) ? DSRC_ERROR : DSRC_GYRO;
+  autoArm        = c.autoArm != 0;
+  bootArmedState = c.armedState;
+  return true;
+}
+
+// =============================================================
 //  status / help
 // =============================================================
 static void printStatus() {
@@ -455,6 +635,13 @@ static void printStatus() {
     "[STATUS] climb_ff_elev=%.1f launch_grace=%lums d_source=%s landed=manual",
     climbElevatorFF, (unsigned long)launchGraceMs,
     dSource == DSRC_GYRO ? "GYRO" : "ERROR");
+  radioPrintln(buf);
+  snprintf(buf, sizeof(buf),
+    "[STATUS] cfg=%s autoarm=%s imu=%s marker=%s",
+    cfgLoadedAtBoot ? "loaded" : "defaults",
+    autoArm ? "on" : "off",
+    imuOk ? "ok" : "FAIL",
+    flyMarkerSet() ? "FLYING" : "clear");
   radioPrintln(buf);
   // サーボ較正 (subtrim + エンドポイント, µs)。ch 0=右エルロン/1=左エルロン/2=エレベータ
   for (int i = 0; i < 3; i++) {
@@ -513,6 +700,13 @@ static void printHelp() {
   radioPrintln("[INFO]   disarm               leave WINDTUNNEL (back to DISARMED)");
   radioPrintln("[INFO]   target p <deg>       sweep pitch setpoint during WT");
   radioPrintln("[INFO]   target r <deg>       sweep roll setpoint during WT");
+  radioPrintln("[INFO] Persistence / recovery:");
+  radioPrintln("[INFO]   save                 save all tuning to flash (also auto on arm/disarm/land)");
+  radioPrintln("[INFO]   wipe                 erase saved config (defaults on next boot)");
+  radioPrintln("[INFO]   autoarm on|off       auto-PRELAUNCH at boot (fly without PC, default off)");
+  radioPrintln("[INFO]   launch_now           force LAUNCH from PRELAUNCH (missed throw rescue)");
+  radioPrintln("[INFO]   reboot [force]       software reset (`force` required in flight)");
+  radioPrintln("[INFO]   (in-flight reset -> auto GLIDE resume from saved config)");
 }
 
 // =============================================================
@@ -680,11 +874,21 @@ static void handleCommandLine(char* line) {
   //   `arm` → PRELAUNCH、`disarm` → DISARMED。フェーズ遷移は phaseTransition() を通す
   //   ことで I/D 状態と各種カウンタを一貫してクリアする。
   if (iequals(cmd, "arm")) {
+    // 飛行中の誤 arm は「MANUAL ホールドで再投擲待ち」= 空中で制御を切ることに
+    // なるため拒否する (先に land / disarm)。
+    if (phase == PHASE_LAUNCH || phase == PHASE_GLIDE) {
+      radioPrintln("[INFO] arm: in flight (land / disarm first)");
+      return;
+    }
     phaseTransition(PHASE_PRELAUNCH);
+    // 飛行直前の構成を必ず永続化。飛行中リセット (ブラウンアウト等) からの
+    // GLIDE 自動復帰と、armed のまま電源断→再投入時の再武装の両方に使う。
+    configSave(1);
     return;
   }
   if (iequals(cmd, "disarm")) {
     phaseTransition(PHASE_DISARMED);
+    configSave(0);   // 飛行中マーカ消去 + armed 解除 + 現構成 (trim 維持) を永続化
     return;
   }
   // `land`: 飛行終了処理。trim を 0 にリセットしてから DISARMED へ遷移。
@@ -695,12 +899,18 @@ static void handleCommandLine(char* line) {
   if (iequals(cmd, "land")) {
     trimDeg[0] = trimDeg[1] = trimDeg[2] = 0.0f;
     phaseTransition(PHASE_DISARMED);
+    configSave(0);   // 飛行終了を永続化 (飛行中マーカ消去、trim=0 も保存)
     return;
   }
   // 風洞試験モード: PHASE_WINDTUNNEL に遷移。`disarm` で抜ける。
   //   tilt safeguard / failsafe / climb_ff は WT 中すべて抑制される。
   //   target_pitch / target_roll をユーザが手動操作して PID 応答を計測する。
   if (iequals(cmd, "wt") || iequals(cmd, "wt_mode") || iequals(cmd, "windtunnel")) {
+    // 飛行中の誤入力で PID 目標が climb/glide からユーザ target[] に飛ぶのを防ぐ
+    if (phase != PHASE_DISARMED) {
+      radioPrintln("[INFO] wt: DISARMED only (disarm/land first)");
+      return;
+    }
     phaseTransition(PHASE_WINDTUNNEL);
     return;
   }
@@ -887,6 +1097,71 @@ static void handleCommandLine(char* line) {
     return;
   }
 
+  // ---- 永続化 / 復帰系 (「何があっても飛ぶ」) ----
+  if (iequals(cmd, "save")) {
+    if (phase == PHASE_LAUNCH || phase == PHASE_GLIDE) {
+      radioPrintln("[INFO] save: not in flight (page erase stalls loop ~85ms)");
+      return;
+    }
+    configSave(phase == PHASE_PRELAUNCH ? 1 : 0);
+    return;
+  }
+  if (iequals(cmd, "wipe")) {
+    if (phase == PHASE_LAUNCH || phase == PHASE_GLIDE) {
+      radioPrintln("[INFO] wipe: not in flight");
+      return;
+    }
+    flashErasePage(CFG_FLASH_ADDR);
+    radioPrintln("[SAVE] flash wiped (RAM values kept; defaults on next boot)");
+    return;
+  }
+  // autoarm on: ブート後に自動で PRELAUNCH へ (地上局 PC が無くても投げれば飛ぶ)。
+  // 設定は即フラッシュへ永続化される。ベンチ作業中の誤検知 (>2.5g の衝撃で PID 起動)
+  // に注意。既定 off。
+  if (iequals(cmd, "autoarm")) {
+    char* arg = nextToken(p);
+    if (!arg) {
+      radioPrint("[PARAM] autoarm="); radioPrintln(autoArm ? "on" : "off");
+      return;
+    }
+    if (phase == PHASE_LAUNCH || phase == PHASE_GLIDE) {
+      radioPrintln("[INFO] autoarm: not in flight");
+      return;
+    }
+    autoArm = iequals(arg, "on") || iequals(arg, "1");
+    configSave(phase == PHASE_PRELAUNCH ? 1 : 0);
+    radioPrint("[PARAM] autoarm="); radioPrintln(autoArm ? "on" : "off");
+    return;
+  }
+  // 投擲検知漏れの救済: PRELAUNCH から手動で LAUNCH を強制発火する。
+  // (弱い投擲で launch_g に届かず trim 滑空になってしまった場合、uplink が
+  //  生きていればこれで PID を空中から起動できる)
+  if (iequals(cmd, "launch_now") || iequals(cmd, "launch_force")) {
+    if (phase != PHASE_PRELAUNCH) {
+      radioPrintln("[INFO] launch_now: PRELAUNCH only (arm first)");
+      return;
+    }
+    radioPrintln("[LAUNCH] forced by command");
+    phaseTransition(PHASE_LAUNCH);
+    return;
+  }
+  // ソフトリセット。飛行中は `reboot force` のみ受理 (誤爆防止)。
+  // 永続化 + 飛行中マーカにより、リブート後も構成復元 / GLIDE 復帰する。
+  if (iequals(cmd, "reboot")) {
+    char* arg = nextToken(p);
+    bool force = arg && iequals(arg, "force");
+    if ((phase == PHASE_LAUNCH || phase == PHASE_GLIDE) && !force) {
+      radioPrintln("[INFO] reboot: in flight (use `reboot force`)");
+      return;
+    }
+    radioPrintln("[INFO] rebooting...");
+    RADIO_SERIAL.flush();
+    DEBUG_SERIAL.flush();
+    delay(50);
+    NVIC_SystemReset();
+    return;  // not reached
+  }
+
   radioPrintln("[INFO] unknown command (type 'help')");
 }
 
@@ -935,6 +1210,15 @@ void setup() {
   wdtBegin();
   wdtKick();
 
+  // リセット理由を読んでクリア (累積レジスタ)。ブート時に表示して、
+  // 「なぜ再起動したのか」(WDT / ソフト / 電源) を必ず追跡可能にする。
+  uint32_t resetReas = NRF_POWER->RESETREAS;
+  NRF_POWER->RESETREAS = 0xFFFFFFFFUL;
+
+  // 保存済み設定を復元 (無ければコンパイル時デフォルトのまま)。
+  // servo attach より先に読むことで、復元した中立 µs で最初のパルスを出せる。
+  cfgLoadedAtBoot = configLoad();
+
   // attach は µs 出力できるよう広めの可動域 (ABS_MIN..ABS_MAX) で確保する。
   // 実際の駆動範囲は servoMinUs/MaxUs（較正値）で制限される。
   servo[0].attach(SERVO_PIN_0, SERVO_US_ABS_MIN, SERVO_US_ABS_MAX);
@@ -947,7 +1231,9 @@ void setup() {
   IMU.settings.gyroRange = 2000;
   IMU.settings.accelRange = 4;
   // IMU が応答しないままだと WDT で再起動する設計（無限待ちは入れない）
-  for (int tries = 0; tries < 10 && IMU.begin() != 0; ++tries) {
+  imuOk = false;
+  for (int tries = 0; tries < 10; ++tries) {
+    if (IMU.begin() == 0) { imuOk = true; break; }
     delay(200);
     wdtKick();
   }
@@ -969,6 +1255,40 @@ void setup() {
   prevUs = micros();
   // 起動直後は受信履歴ゼロ → 即フェイルセーフ発動を防ぐため初期化
   lastUplinkMs = millis();
+
+  // ---- ブート診断 + 復帰判定 ----
+  {
+    char bbuf[96];
+    snprintf(bbuf, sizeof(bbuf), "[BOOT] resetreas=0x%08lx%s%s%s%s cfg=%s",
+      (unsigned long)resetReas,
+      (resetReas & POWER_RESETREAS_DOG_Msk)      ? " WDT"     : "",
+      (resetReas & POWER_RESETREAS_SREQ_Msk)     ? " SOFT"    : "",
+      (resetReas & POWER_RESETREAS_RESETPIN_Msk) ? " PIN"     : "",
+      (resetReas == 0)                           ? " POWERON" : "",
+      cfgLoadedAtBoot ? "loaded" : "defaults");
+    radioPrintln(bbuf);
+  }
+  if (!imuOk) {
+    radioPrintln("[ERR] IMU init FAILED - do not fly (check wiring/power)");
+  }
+
+  // 飛行中リセットからの自動復帰 (「何があっても飛ぶ」):
+  //   1) 飛行中マーカあり → 保存構成のまま GLIDE を再開。RESUME_HOLD_MS の間は
+  //      PID ゼロホールド (サーボ = 復元 trim) で Madgwick の収束を待つ。
+  //   2) armed のままリセット → PRELAUNCH を再開 (投擲待ちに戻る)。
+  //   3) autoarm on → PC レス運用: ブートだけで PRELAUNCH に入る。
+  if (flyMarkerSet()) {
+    resumeHoldActive = true;
+    resumeHoldStartMs = millis();
+    phaseTransition(PHASE_GLIDE);
+    radioPrintln("[RESUME] in-flight reset detected -> GLIDE resume (attitude hold 1.5s)");
+  } else if (cfgLoadedAtBoot && bootArmedState == 1) {
+    phaseTransition(PHASE_PRELAUNCH);
+    radioPrintln("[RESUME] reset while ARMED -> PRELAUNCH (throw to fly)");
+  } else if (autoArm) {
+    phaseTransition(PHASE_PRELAUNCH);
+    radioPrintln("[AUTOARM] on -> PRELAUNCH (no ground station needed)");
+  }
 
   radioPrintln("[READY] glider_nRF52840 booted (aileron mixing: D0=R / D1=L / D2=Elev)");
   printHelp();
@@ -1011,7 +1331,9 @@ void loop() {
   // dt
   uint32_t nowUs = micros();
   float dt = (nowUs - prevUs) / 1000000.0f;
-  if (dt <= 0.0f) dt = 1.0f / (float)MEASURING_FREQ;
+  // 異常 dt の除去: フラッシュ保存 (~85ms) や radio 輻輳でループが延びた直後に
+  // I 項へ巨大な e*dt が一発で乗るのを防ぐ (負/ゼロも既定周期に置換)。
+  if (dt <= 0.0f || dt > 0.2f) dt = 1.0f / (float)MEASURING_FREQ;
   prevUs = nowUs;
   uint32_t dt_ms = (uint32_t)(dt * 1000.0f + 0.5f);
 
@@ -1093,9 +1415,17 @@ void loop() {
   //   誤動作する可能性があるため、しきい値は厳密に (0, 180) の範囲でのみ有効。
   // 風洞 (PHASE_WINDTUNNEL) では支柱固定で角度が大きくなる場合があるため
   // tilt safeguard は抑制する。
+  //
+  // 飛行中 (LAUNCH/GLIDE) も抑制する: 空中で MANUAL + trim=0 に落とすことは
+  // 「制御放棄」であり、ほぼ確実に墜落する。姿勢が大きく崩れたときに機体を
+  // 立て直す手段はまさに PID そのもの (target roll=0 / glide_pitch) なので、
+  // 飛行中に safeguard で PID を切ってはいけない。特に投擲直後は Madgwick が
+  // ショックで一時的に 60° 超を出すことがあり、旧動作では climb-out 前に
+  // 飛行が死んでいた。safeguard は地上ベンチで AUTO を試すときの保護として残す。
   if (tiltSafeguardDeg > 0.0f && tiltSafeguardDeg < 180.0f
       && baseMode == MODE_AUTO && !tiltSafeguardTriggered
-      && phase != PHASE_WINDTUNNEL) {
+      && phase != PHASE_WINDTUNNEL
+      && phase != PHASE_LAUNCH && phase != PHASE_GLIDE) {
     float ar = fabsf(Q[0]);
     float ap = fabsf(Q[1]);
     float tiltMax = ar > ap ? ar : ap;
@@ -1129,6 +1459,18 @@ void loop() {
   //   安定するまで舵を打たない方が安全。grace 経過後に PID 制御を開始。
   bool inLaunchGrace = (phase == PHASE_LAUNCH)
       && (uint32_t)(millis() - phaseStartMs) < launchGraceMs;
+
+  // リセット復帰 (boot -> GLIDE) 直後も同じゼロホールド経路を使う:
+  // Madgwick は初期姿勢 (単位クォータニオン) から再スタートするため、実姿勢へ
+  // 収束するまで舵を打たない (サーボは復元済み trim を保持)。
+  if (resumeHoldActive) {
+    if ((uint32_t)(millis() - resumeHoldStartMs) < RESUME_HOLD_MS) {
+      inLaunchGrace = true;
+    } else {
+      resumeHoldActive = false;
+      radioPrintln("[RESUME] attitude hold end -> PID engaged");
+    }
+  }
 
   // フェーズに応じた実効目標角を作る (pitch のみ動的化)
   float effectiveTarget[3] = { target[0], currentTargetPitch(), target[2] };
