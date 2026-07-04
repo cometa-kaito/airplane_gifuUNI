@@ -288,6 +288,7 @@ uint8_t  lowGFrames = 0;       // 失速判定カウンタ
 uint32_t impactCandMs = 0;     // 着地衝撃候補の時刻 (0=なし)
 uint8_t  quietFrames = 0;      // 衝撃後の静穏カウンタ
 bool     reportSent = false;
+uint32_t lastReportMs = 0;     // レポート定期再送用 (着地地点が無線範囲外対策)
 
 // ---- command parser ----
 static char cmdBuf[120];
@@ -1603,6 +1604,7 @@ void loop() {
             fm.tImpactMs = impactCandMs;
             fm.valid = true;
             reportSent = true;
+            lastReportMs = millis();
             printFlightReport();
           }
         } else if ((uint32_t)(millis() - impactCandMs) > 4000) {
@@ -1612,6 +1614,12 @@ void loop() {
           quietFrames = 0;
         }
       }
+    } else if (fm.valid && (uint32_t)(millis() - lastReportMs) > 5000) {
+      // 着地地点が地上局の無線範囲外だと一発目のレポートは届かないことがある。
+      // disarm/land されるまで 5 秒ごとに再送し、回収者が機体に近づく／
+      // 持ち帰る途中のどこかで地上局に届くようにする。
+      lastReportMs = millis();
+      printFlightReport();
     }
   }
 

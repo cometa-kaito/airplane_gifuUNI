@@ -169,11 +169,13 @@ class Session:
         self.link.send("arm", "[SAVE]")
 
         rep = None
-        if self.args.test:
+        if self.args.test or self.args.sim:
+            # 疑似飛行 (launch_now)。--sim では探索ロジック全体をベンチ検証できる
             self.link.send("launch_now", "[PHASE] -> LAUNCH")
             lines = self.link.read_lines(4.0)          # 疑似滑空
             lines += self.link.send("report", "[REPORT]")
             rep = parse_report(lines)
+            print(f"   (sim #{self.n} [{stage}] gp={gp} cms={cms} cp={cp})")
         else:
             print(f"\n>> 投擲 #{self.n} [{stage}] glide_pitch={gp} climb_ms={cms} "
                   f"climb_pitch={cp}")
@@ -286,6 +288,20 @@ class Session:
         print(f"  climb_ms    = {cms}")
         print(f"  climb_pitch = {cp}")
         print(f"  投擲数: {self.n}  ログ: {self.log_path}")
+        self.print_summary()
+
+    def print_summary(self):
+        """全投擲のサマリ表 (objective 降順、上位 8)。"""
+        if not self.throws:
+            return
+        print("\n--- 投擲サマリ (objective 上位) ---")
+        print(f"{'stage':<14}{'gp':>5}{'cms':>6}{'cp':>5}{'t':>7}{'v0':>6}"
+              f"{'stall':>6}{'obj':>8}")
+        for t in sorted(self.throws, key=lambda x: -x["obj"])[:8]:
+            r = t["rep"]
+            print(f"{t['stage']:<14}{t['gp']:>5}{t['cms']:>6}{t['cp']:>5}"
+                  f"{r.get('t_flight', 0):>7.2f}{r.get('v0', 0):>6.1f}"
+                  f"{int(r.get('stall', 0)):>6}{t['obj']:>8.3f}")
 
     def run_test(self):
         """ベンチ動作確認: ソフト射出 1 回でループ全体を検証する。"""
@@ -302,7 +318,9 @@ class Session:
 def main():
     ap = argparse.ArgumentParser(description="飛行距離の自動最適化 (投げるだけ)")
     ap.add_argument("--port", required=True, help="地上機の COM ポート (例 COM12)")
-    ap.add_argument("--test", action="store_true", help="ベンチ動作確認 (launch_now)")
+    ap.add_argument("--test", action="store_true", help="ベンチ動作確認 (疑似飛行 1 回)")
+    ap.add_argument("--sim", action="store_true",
+                    help="全ステージを疑似飛行で通し検証 (ベンチ用、実射出なし)")
     ap.add_argument("--norm", choices=["none", "v0", "v02"], default="none",
                     help="目的関数の射出強度正規化 (既定 none: 引き量を固定できるなら生の滞空時間が最も低ノイズ)")
     ap.add_argument("--throws", type=int, default=1, help="条件あたり投擲数 (既定 1)")

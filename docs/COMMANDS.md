@@ -140,8 +140,11 @@ armed (PRELAUNCH) 中のリセットは PRELAUNCH に自動復帰し、そのま
 
 ```powershell
 python tools\glide_optimizer.py --port COM12          # 本番 (人は同じ引き量で投げるだけ)
-python tools\glide_optimizer.py --port COM12 --test   # ベンチ動作確認 (launch_now 疑似飛行)
+python tools\glide_optimizer.py --port COM12 --test   # ベンチ動作確認 (疑似飛行 1 回)
+python tools\glide_optimizer.py --port COM12 --sim    # 全ステージを疑似飛行で通し検証
 ```
+
+着地地点が地上局の無線範囲外でも、機体は **disarm されるまで 5 秒ごとにレポートを再送**するので、回収して戻る途中で必ず届く。
 
 glide_pitch → climb_ms → climb_pitch の順にグリッド探索し (計 13〜16 投)、最後に**時間最適 (最小沈下) → 距離最適 (最良滑空) のバイアス補正**として glide_pitch を `--debias` 度 (既定 1.5) 下げて確認、最良パラメータを `save` でフラッシュへ永続化する。各投の詳細は `logs/optimizer_*.csv` に自動保存。滞空時間 proxy の理論限界により、到達点は理論最大距離のおよそ 9 割強（真の距離を測るセンサが無いため最終数 % は検証不能）。
 
