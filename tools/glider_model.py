@@ -103,11 +103,15 @@ def analyze(geom, mass=None, tail_arm=None, cd0=0.035, e_ind=0.7):
         AR_t = ht["span"] ** 2 / S_t
         a_t = wing_lift_slope_deg(AR_t, CLARK_Y["a0_deg"])
         deps = 0.35                 # 吹き下ろし勾配 (概算)
-        x_np = 0.25 + VH * (a_t / a_w) * (1.0 - deps)   # 中立点 [MAC比]
+        eta_t = 0.90                # 尾翼動圧効率 (胴体後流で ~0.85-0.9)
+        x_np = 0.25 + eta_t * VH * (a_t / a_w) * (1.0 - deps)   # 中立点 [MAC比]
         cg = geom.get("cg_frac", None)
+        # 静安定余裕 10% を得る推奨 CG (前縁からの mm も)
+        cg_target = x_np - 0.10
         out.update({
             "S_t": S_t, "AR_t": AR_t, "VH": VH, "x_np": x_np,
             "static_margin": (x_np - cg) if cg is not None else None,
+            "cg_target": cg_target, "cg_target_mm": cg_target * mac * 1000.0,
         })
     return out
 
@@ -175,8 +179,11 @@ def main():
         if r["static_margin"] is not None:
             sm = r["static_margin"] * 100
             note = "健全" if 0.08 <= r["static_margin"] <= 0.18 else \
-                   ("後方=敏感/不安定寄り" if r["static_margin"] < 0.08 else "前方=安定だが要引き起こし")
+                   ("低い=敏感/CG後方" if r["static_margin"] < 0.08 else "前方=安定だが要引き起こし")
             print(f" 静安定余裕 (CG {args.cg*100:.0f}%): {sm:+.0f}% MAC  → {note}")
+            print(f" 推奨CG (余裕10%): {r['cg_target']*100:.0f}% MAC = "
+                  f"前縁から {r['cg_target_mm']:.0f} mm "
+                  f"(現在 {args.cg*r['mac']*1000:.0f} mm)")
     print("=" * 56)
     grid, debias = emit_optimizer_flags(r)
     grid_str = " ".join(f"{x:g}" for x in grid)
