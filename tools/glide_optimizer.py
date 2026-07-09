@@ -247,7 +247,8 @@ class Session:
         # Stage A: glide_pitch 粗グリッド → 最良点の周りを細分化
         (best, _, _) = self.best_of("A:glide粗", [(g, cms, cp) for g in a.gp_grid])
         gp = best[0]
-        fine = [round(gp - 0.7, 1), round(gp + 0.7, 1)]
+        # 粗グリッド間隔 (~3°) に合わせて ±1.5° を細探索 (最小沈下点をより正確に)
+        fine = [round(gp - 1.5, 1), round(gp + 1.5, 1)]
         fine = [g for g in fine if a.gp_min <= g <= a.gp_max and g not in a.gp_grid]
         if fine:
             self.best_of("A:glide細", [(g, cms, cp) for g in fine])
@@ -325,19 +326,26 @@ def main():
                     help="目的関数の射出強度正規化 (既定 none: 引き量を固定できるなら生の滞空時間が最も低ノイズ)")
     ap.add_argument("--throws", type=int, default=1, help="条件あたり投擲数 (既定 1)")
     ap.add_argument("--timeout", type=float, default=120, help="着地待ち秒数")
-    ap.add_argument("--debias", type=float, default=1.5,
-                    help="最終段で glide_pitch を下げる量 [deg] (時間最適→距離最適の補正)")
+    ap.add_argument("--debias", type=float, default=5.0,
+                    help="最終段で glide_pitch を下げる量 [deg] (時間最適→距離最適の補正)。"
+                         "既定 5.0 は tools/glider_model.py が本機の諸元 (AR=3.33/ClarkY) "
+                         "から算出した値 (4.6〜5.3°)。低ARで揚力傾斜が寝ているため大きい")
     ap.add_argument("--gp0", type=float, default=3.0)
     ap.add_argument("--cms0", type=int, default=1200)
     ap.add_argument("--cp0", type=float, default=15.0)
     ap.add_argument("--gp-grid", dest="gp_grid", type=float, nargs="+",
-                    default=[1.5, 3.0, 4.5, 6.0])
+                    default=[-4.0, -1.0, 2.0, 5.0],
+                    help="glide_pitch 粗探索グリッド。既定は glider_model.py の最小沈下"
+                         "姿勢推定 (~0°) を挟むよう下方に広げてある (旧 1.5〜6 は上寄りで"
+                         "最小沈下点を外す恐れがあった)")
     ap.add_argument("--cms-grid", dest="cms_grid", type=int, nargs="+",
                     default=[1000, 1400, 1800])
     ap.add_argument("--cp-grid", dest="cp_grid", type=float, nargs="+",
                     default=[12.0, 18.0, 24.0])
-    ap.add_argument("--gp-min", dest="gp_min", type=float, default=0.5)
-    ap.add_argument("--gp-max", dest="gp_max", type=float, default=8.0)
+    # best-glide は負ピッチ姿勢 (~-5°) に来るため下限を負まで許す。
+    # firmware の glide_pitch 受理範囲は -20..30 なので、その内側に収める。
+    ap.add_argument("--gp-min", dest="gp_min", type=float, default=-12.0)
+    ap.add_argument("--gp-max", dest="gp_max", type=float, default=12.0)
     args = ap.parse_args()
 
     s = Session(args)
