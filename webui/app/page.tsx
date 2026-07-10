@@ -449,6 +449,7 @@ export default function Page() {
               recording={rec.recording}
               onPreviewElevator={previewElevatorFF}
               elevatorTrim={trim.live.s2}
+              infoLog={infoLog}
             />
           </div>
 

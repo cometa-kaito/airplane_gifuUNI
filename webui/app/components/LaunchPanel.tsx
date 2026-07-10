@@ -43,6 +43,24 @@ const DEFAULTS: StoredParams = {
 
 const STORAGE_KEY = "glider-webui:phase_params";
 
+// 機体の [STATUS] 応答行から launch 系パラメータを読み取る (接続時の機体→UI 反映用)。
+// 例: "[STATUS] phase=... launch_g=1.80 climb_ms=500 climb_pitch=20.0 glide_pitch=-2.0"
+//     "[STATUS] climb_ff=-5%(ramp) launch_grace=150ms d_source=GYRO ..."
+function parseStatusParams(lines: string[]): Partial<StoredParams> {
+  const out: Partial<StoredParams> = {};
+  let m: RegExpMatchArray | null;
+  for (const ln of lines) {
+    if (!ln.startsWith("[STATUS]")) continue;
+    if ((m = ln.match(/launch_g=([-\d.]+)/))) out.launch_g = parseFloat(m[1]);
+    if ((m = ln.match(/climb_ms=(\d+)/))) out.climb_ms = parseInt(m[1], 10);
+    if ((m = ln.match(/climb_pitch=([-\d.]+)/))) out.climb_pitch = parseFloat(m[1]);
+    if ((m = ln.match(/glide_pitch=([-\d.]+)/))) out.glide_pitch = parseFloat(m[1]);
+    if ((m = ln.match(/climb_ff=([-\d.]+)%/))) out.climb_ff = parseFloat(m[1]);
+    if ((m = ln.match(/launch_grace=(\d+)/))) out.launch_grace = parseInt(m[1], 10);
+  }
+  return out;
+}
+
 const LAUNCH_G_PRESETS = [
   { value: 1.8, label: "1.8g", hint: "弱投擲（軽く放る）" },
   { value: 2.5, label: "2.5g", hint: "標準（既定）" },
@@ -84,6 +102,7 @@ export function LaunchPanel({
   recording = false,
   onPreviewElevator,
   elevatorTrim = 0,
+  infoLog,
 }: {
   attitudeRef: MutableRefObject<TelemetryFrame | null>;
   onSend: (cmd: string) => Promise<void>;
@@ -94,6 +113,8 @@ export function LaunchPanel({
   onPreviewElevator?: (ff: number | null) => void;
   /** 現在のエレベータ trim (deg)。旧ファーム互換ブーストの基準値に使う。 */
   elevatorTrim?: number;
+  /** 情報ログ ([STATUS] 等)。接続時に機体の現在値を読み取り UI へ反映するのに使う。 */
+  infoLog?: MutableRefObject<{ ts: number; line: string }[]>;
 }) {
   const [params, setParams] = useState<StoredParams>(DEFAULTS);
   const [applied, setApplied] = useState<StoredParams>(DEFAULTS);
@@ -215,35 +236,41 @@ export function LaunchPanel({
     }
   }, []);
 
-  // 接続時にパラメータを機体へ自動同期 (armed 状態は同期しない)
-  const autoSyncedRef = useRef(false);
+  // 接続時: パラメータを機体へ push せず、機体の現在値 (フラッシュ保存済み) を
+  // status で読んで UI に反映する。以前の「push 同期」は接続のたびに機体設定を
+  // UI キャッシュ値へ巻き戻す不具合の原因だったため廃止 (機体側が真の状態)。
+  const readbackRef = useRef(false);
+  const readFromAircraft = useCallback(() => {
+    if (!enabled || !infoLog) return;
+    void onSend("status");
+    // status 応答 (複数行) が届くのを待ってから、最新の [STATUS] 行を解析して反映
+    window.setTimeout(() => {
+      const recent = infoLog.current.slice(-30).map((e) => e.line);
+      const parsed = parseStatusParams(recent);
+      if (Object.keys(parsed).length > 0) {
+        setParams((p) => ({ ...p, ...parsed }));
+        setApplied((a) => {
+          const a2 = { ...a, ...parsed };
+          try {
+            window.localStorage.setItem(STORAGE_KEY, JSON.stringify(a2));
+          } catch {
+            // ignore
+          }
+          return a2;
+        });
+      }
+    }, 700);
+  }, [enabled, onSend, infoLog]);
+
   useEffect(() => {
     if (!enabled) {
-      autoSyncedRef.current = false;
+      readbackRef.current = false;
       return;
     }
-    if (autoSyncedRef.current) return;
-    autoSyncedRef.current = true;
-    (async () => {
-      try {
-        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-        await onSend(`launch_g ${applied.launch_g.toFixed(2)}`); await sleep(15);
-        await onSend(`climb_ms ${Math.round(applied.climb_ms)}`); await sleep(15);
-        await onSend(`climb_pitch ${applied.climb_pitch.toFixed(1)}`); await sleep(15);
-        // 互換モード中は機体へ ±30 にクランプした値を送る (超過分は Arm 時に trim へ)
-        await onSend(`climb_ff ${ffWire(applied.climb_ff).toFixed(1)}`); await sleep(15);
-        await onSend(`glide_pitch ${applied.glide_pitch.toFixed(1)}`);
-        // launch_grace は 2026-07 以降のファームのみ対応。既定値 (500) のままなら
-        // 送信不要なので、旧ファームで「未達コマンド」警告を出さないよう変更時のみ送る。
-        if (applied.launch_grace !== DEFAULTS.launch_grace) {
-          await sleep(15);
-          await onSend(`launch_grace ${Math.round(applied.launch_grace)}`);
-        }
-      } catch {
-        autoSyncedRef.current = false;
-      }
-    })();
-  }, [enabled, applied, onSend]);
+    if (readbackRef.current) return;
+    readbackRef.current = true;
+    readFromAircraft();
+  }, [enabled, readFromAircraft]);
 
   // 1 個ずつ送信して applied を更新する汎用ハンドラ
   const sendOne = useCallback(
@@ -643,6 +670,21 @@ export function LaunchPanel({
         >
           --
         </div>
+      </div>
+
+      {/* 機体から現在値を読込 (接続時にも自動実行される) */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={readFromAircraft}
+          disabled={!enabled}
+          title="機体のフラッシュ保存値 (launch_g / climb_ms / climb_ff / glide_pitch / launch_grace) を読み取って UI に反映"
+          className="px-2.5 py-1 text-xs font-bold rounded-md border bg-glider-surface border-glider-border text-glider-textDim hover:border-glider-borderHi disabled:opacity-40"
+        >
+          🔄 機体から読込
+        </button>
+        <span className="text-[10px] text-glider-textMute">
+          接続時に自動で機体の現在値を反映します (UI がキャッシュ値を機体へ上書きしません)
+        </span>
       </div>
 
       {/* launch_g preset 行 (+微調整スピナー) */}
