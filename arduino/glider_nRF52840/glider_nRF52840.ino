@@ -238,7 +238,7 @@ uint32_t climbMs = 1500;                    // LAUNCH 持続時間 [ms]
 uint32_t launchGraceMs = 500;               // LAUNCH 直後の PID ゼロホールド [ms]
 float climbTargetPitch = 15.0f;             // LAUNCH 中の目標 pitch [deg]
 float glideTargetPitch = 3.0f;              // GLIDE 中の目標 pitch [deg]
-float climbElevatorFF = 5.0f;               // LAUNCH 中のエレベータ feed-forward [deg]
+float climbElevatorFF = -40.0f;             // LAUNCH ズームのエレベータ開ループ・ピーク [可動域%、負=機首上げ]。sinランプで0→ピーク→0
 // 着地: 自動検出は実装しない (ユーザ判断による誤発火リスク回避)。
 //   GLIDE フェーズは `land` コマンド / WebUI の 🛬 Land ボタン / PyQt の Land ボタンで
 //   手動 LANDED に遷移させる。`disarm` で直接 DISARMED に飛ばすことも可能。
@@ -392,9 +392,15 @@ static void phaseTransition(FlightPhase newPhase) {
 
   switch (newPhase) {
     case PHASE_DISARMED:
-    case PHASE_PRELAUNCH:
-      // MANUAL ホールド (PRELAUNCH は LAUNCH 検出まで MANUAL のまま)
       baseMode = MODE_MANUAL;
+      break;
+    case PHASE_PRELAUNCH:
+      // arm したら即 AUTO/PID を起動。サーボが姿勢に反応するので「電源が入って
+      // 制御が生きている」ことが一目で分かり、投擲前に制御ループも暖機される。
+      // (launcher に急角度で載せても切れないよう tilt safeguard は PRELAUNCH 除外)
+      baseMode = MODE_AUTO;
+      autoSub  = SUB_PID;
+      tiltSafeguardTriggered = false;
       break;
     case PHASE_LAUNCH:
     case PHASE_GLIDE:
@@ -448,9 +454,19 @@ static float currentTargetPitch() {
   }
 }
 
-// 現在フェーズに応じたエレベータ feed-forward (deg)
+// LAUNCH 中のエレベータ・オープンループ指令 (ズーム軌道生成)。
+//   姿勢推定に依存しない開ループで機首上げズームを作る (高Gで Madgwick が
+//   一時的に狂っても影響を受けない = 発射直後に最も堅牢)。
+//   climbElevatorFF は「可動域に対する %」(負 = 機首上げ)。
+//   0 → ピーク → 0 の滑らかな山形 (sin ランプ) を climb_ms 区間でかけ、
+//   緩やかに上げて緩やかに戻す (急な引き起こし/押さえを避け失速・エネルギー損失を防ぐ)。
 static float currentElevatorFF() {
-  return (phase == PHASE_LAUNCH) ? climbElevatorFF : 0.0f;
+  if (phase != PHASE_LAUNCH || climbMs == 0) return 0.0f;
+  float prog = (float)(uint32_t)(millis() - phaseStartMs) / (float)climbMs;
+  prog = clipf(prog, 0.0f, 1.0f);
+  float ramp = sinf(3.14159265f * prog);              // 0 → 1 → 0 の滑らかな山
+  float peakDeg = (climbElevatorFF / 100.0f) * 90.0f; // % → 論理舵角 (±90)
+  return peakDeg * ramp;
 }
 
 // =============================================================
@@ -747,7 +763,7 @@ static void printStatus() {
     (unsigned long)climbMs, climbTargetPitch, glideTargetPitch);
   radioPrintln(buf);
   snprintf(buf, sizeof(buf),
-    "[STATUS] climb_ff_elev=%.1f launch_grace=%lums d_source=%s landed=manual",
+    "[STATUS] climb_ff=%.0f%%(ramp) launch_grace=%lums d_source=%s landed=manual",
     climbElevatorFF, (unsigned long)launchGraceMs,
     dSource == DSRC_GYRO ? "GYRO" : "ERROR");
   radioPrintln(buf);
@@ -1092,12 +1108,12 @@ static void handleCommandLine(char* line) {
       if (v < -45 || v > 60) { radioPrintln("[INFO] climb_pitch range -45..60"); return; }
       climbTargetPitch = v;
       snprintf(buf, sizeof(buf), "[PARAM] climb_pitch=%.1f", climbTargetPitch);
-    } else if (iequals(cmd, "climb_ff")) {
-      // 上限は物理舵角と同じ ±90 (最終出力 angle_E が ±90 でクリップされるため、
-      // これ以上は意味がない)。旧上限 ±30 はユーザ要望で撤廃 (2026-07)。
-      if (v < -90 || v > 90) { radioPrintln("[INFO] climb_ff range -90..90"); return; }
+    } else if (iequals(cmd, "climb_ff") || iequals(cmd, "climb_ff_pct")) {
+      // LAUNCH ズームのエレベータ・オープンループ指令のピーク値。
+      // 「可動域に対する %」(-100..100、負 = 機首上げ)。sin ランプで 0→ピーク→0。
+      if (v < -100 || v > 100) { radioPrintln("[INFO] climb_ff range -100..100 (%)"); return; }
       climbElevatorFF = v;
-      snprintf(buf, sizeof(buf), "[PARAM] climb_ff=%.1f", climbElevatorFF);
+      snprintf(buf, sizeof(buf), "[PARAM] climb_ff=%.0f%% (open-loop ramp peak)", climbElevatorFF);
     } else { // glide_pitch
       if (v < -20 || v > 30) { radioPrintln("[INFO] glide_pitch range -20..30"); return; }
       glideTargetPitch = v;
@@ -1670,7 +1686,7 @@ void loop() {
   // 飛行が死んでいた。safeguard は地上ベンチで AUTO を試すときの保護として残す。
   if (tiltSafeguardDeg > 0.0f && tiltSafeguardDeg < 180.0f
       && baseMode == MODE_AUTO && !tiltSafeguardTriggered
-      && phase != PHASE_WINDTUNNEL
+      && phase != PHASE_WINDTUNNEL && phase != PHASE_PRELAUNCH
       && phase != PHASE_LAUNCH && phase != PHASE_GLIDE) {
     float ar = fabsf(Q[0]);
     float ap = fabsf(Q[1]);
@@ -1718,6 +1734,13 @@ void loop() {
     }
   }
 
+  // 各軸ごとの PID ゼロホールド。ピッチは LAUNCH 中つねにオープンループ
+  // (FF ランプで機首上げズーム) にするため PID を止める。ロールは grace/resume の
+  // 間だけ止め、それ以外は水平保持で作動させる (まっすぐズーム = 直進性)。
+  bool pidHold[3];
+  for (int i = 0; i < 3; i++) pidHold[i] = inLaunchGrace;
+  if (phase == PHASE_LAUNCH) pidHold[1] = true;
+
   // フェーズに応じた実効目標角を作る (pitch のみ動的化)
   float effectiveTarget[3] = { target[0], currentTargetPitch(), target[2] };
 
@@ -1735,7 +1758,7 @@ void loop() {
     // LAUNCH grace 中は PID 出力ゼロホールド（後段で u[i]=0）。ここで積分も
     // 進めてしまうと anti-windup も効かないまま I 項が溜まり、grace 明けに
     // エレベータ/エルロンへ段差として一気に乗る。grace 中は 0 ホールドする。
-    if (baseMode == MODE_AUTO && autoSub == SUB_PID && !inLaunchGrace) {
+    if (baseMode == MODE_AUTO && autoSub == SUB_PID && !pidHold[i]) {
       integralE[i] += e * dt;
       integralE[i] = clipf(integralE[i], -integralLimit, integralLimit);
     } else {
@@ -1759,7 +1782,7 @@ void loop() {
     }
     prevE[i] = e;
 
-    if (baseMode == MODE_AUTO && !inLaunchGrace) {
+    if (baseMode == MODE_AUTO && !pidHold[i]) {
       float u_raw;
       if (autoSub == SUB_P)        u_raw = Kp[i] * e;
       else if (autoSub == SUB_PD)  u_raw = Kp[i] * e + Kd[i] * de;
