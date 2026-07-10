@@ -37,7 +37,7 @@ const DEFAULTS: StoredParams = {
   launch_grace: 500,
   climb_ms: 1500,
   climb_pitch: 15,
-  climb_ff: 5,
+  climb_ff: -40,
   glide_pitch: 3,
 };
 
@@ -50,11 +50,13 @@ const LAUNCH_G_PRESETS = [
 ];
 
 // 投擲直後にエレベータを何度上げるか (feed-forward)。LAUNCH フェーズ全体で加算される。
+// ズーム量 (可動域%、負=機首上げ)。新ファームは開ループの滑らかランプで生成。
+// ※ この機体は「負=機首上げ」(実機検証済)。取付/reverse が違う機体は符号が逆になる。
 const CLIMB_FF_PRESETS = [
-  { value: 0, label: "0° なし", hint: "機首上げ補助なし (PID のみ)" },
-  { value: 3, label: "+3° 弱", hint: "軽い機首上げ" },
-  { value: 5, label: "+5° 標準", hint: "既定値" },
-  { value: 10, label: "+10° 強", hint: "強い機首上げ (失速に注意)" },
+  { value: 0, label: "0% なし", hint: "ズームなし" },
+  { value: -25, label: "-25% 弱", hint: "軽いズーム" },
+  { value: -40, label: "-40% 標準", hint: "標準ズーム" },
+  { value: -60, label: "-60% 強", hint: "強いズーム (頂点で失速注意)" },
 ];
 
 const PHASE_COLORS: Record<number, string> = {
@@ -124,7 +126,10 @@ export function LaunchPanel({
   //   ※ 飛行中に通信が完全に切れると GLIDE で上乗せ分が残るリスクがある
   //     (Land で trim=0 に戻る)。確実なのは最新ファームの書き込み。
   const FF_LIMIT = 30;
-  const [ffCompat, setFfCompat] = useState(true);
+  // 2026-07 以降のファームは climb_ff を「可動域%」として直接受理し、発射ズームを
+  // 開ループの滑らかランプで生成する。±30 クランプ + trim 上乗せの旧互換ハックは
+  // 不要かつ有害 (climb_ff が削られ Arm 時にトリムが注入される) なので既定 OFF。
+  const [ffCompat, setFfCompat] = useState(false);
   useEffect(() => {
     try {
       const v = window.localStorage.getItem("glider-webui:ff_compat");
@@ -728,7 +733,7 @@ export function LaunchPanel({
         )}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1 pb-1">
-          {numInput("climb_ff", "climb_ff", "deg", "climb_ff", -90, 90, 1, 1, "エレベータ上げ量")}
+          {numInput("climb_ff", "climb_ff", "%", "climb_ff", -100, 100, 5, 0, "ズーム量(可動域%、負=機首上げ)")}
           {numInput("climb_pitch", "climb_pitch", "deg", "climb_pitch", -45, 60, 1, 1, "上昇目標角")}
           {numInput("climb_ms", "climb_ms", "ms", "climb_ms", 200, 10000, 100, 0, "上昇時間")}
           {numInput("launch_grace", "launch_grace", "ms", "launch_grace", 0, 5000, 100, 0, "PID 停止保持")}
@@ -755,7 +760,9 @@ export function LaunchPanel({
             className="mt-0.5"
           />
           <label htmlFor="ff-compat" className="text-[11px] text-glider-textDim leading-snug cursor-pointer">
-            <strong>旧ファーム互換モード</strong> — 機体ファームを書き込まずに climb_ff の ±30° 超えを使う。
+            <strong>旧ファーム互換モード</strong> — <strong>2026-07 以降のファームでは OFF のまま</strong>使ってください
+            (climb_ff を可動域%として直接受理し、開ループの滑らかランプでズームします)。以下は旧ファーム専用の説明:
+            機体ファームを書き込まずに climb_ff の ±30° 超えを使う。
             機体へは climb_ff を ±30 にクランプして送り、超過分は <strong>Arm した瞬間にエレベータ trim (s2) へ上乗せ</strong>、
             GLIDE 移行 / Disarm で自動的に元へ戻します (確認応答つき・未達なら自動再送)。
             {ffCompat && ffExtra(applied.climb_ff) !== 0 && (
