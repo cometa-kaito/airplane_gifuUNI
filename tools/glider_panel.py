@@ -391,33 +391,12 @@ class Panel:
         self._mkbtn(mb, "ZERO", lambda: self.send("zero"), "#6366f1")
         self._mkbtn(mb, "リンク再起動", lambda: self.send("/channel 1"), "#475569")
 
-        # ---- トリム (真っ直ぐ調整) ----
+        # ---- サーボ設定: 可動域 + 中立(trim)。drive-and-set ----
+        #   トリム(deg)の別枠は持たない。ジョグで動かして「中立(trim)に」を押した
+        #   位置を、その舵の中立=トリムとする (MID=servoCenterUs に設定し、
+        #   trimDeg は 0 にリセット → MID がそのまま真の中立になる)。
         self.SCH_NAMES = ["右エルロン s0", "左エルロン s1", "エレベータ s2"]
-        self.trim_val = [0.0, 0.0, 0.0]
-        tf = tk.LabelFrame(root, text="トリム (真っ直ぐ調整, deg) — MANUAL/DISARMED で有効",
-                           fg="#fbbf24", bg="#0f172a", padx=6, pady=4)
-        tf.pack(fill="x", padx=8, pady=4)
-        self.trim_lbls = []
-        for ch in range(3):
-            row = tk.Frame(tf, bg="#0f172a"); row.pack(fill="x", pady=1)
-            tk.Label(row, text=self.SCH_NAMES[ch], width=12, anchor="w",
-                     fg="#cbd5e1", bg="#0f172a").pack(side="left")
-            tk.Button(row, text="−", width=3,
-                      command=lambda c=ch: self.adj_trim(c, -1)).pack(side="left")
-            lbl = tk.Label(row, text="0.0", width=6, fg="#fff", bg="#1e293b")
-            lbl.pack(side="left", padx=3)
-            tk.Button(row, text="＋", width=3,
-                      command=lambda c=ch: self.adj_trim(c, +1)).pack(side="left")
-            tk.Button(row, text="0", width=3,
-                      command=lambda c=ch: self.set_trim(c, 0.0)).pack(side="left", padx=2)
-            self.trim_lbls.append(lbl)
-        trow = tk.Frame(tf, bg="#0f172a"); trow.pack(anchor="w", pady=2)
-        tk.Button(trow, text="機体から読込", command=self.read_cal).pack(side="left", padx=2)
-        tk.Button(trow, text="💾 保存(flash)", command=lambda: self.send("save"),
-                  bg="#065f46", fg="white").pack(side="left", padx=6)
-
-        # ---- 可動域 (サーボ較正, drive-and-set) ----
-        cf = tk.LabelFrame(root, text="可動域 (サーボ較正) — DISARMED でスライダを動かし端をセット",
+        cf = tk.LabelFrame(root, text="サーボ設定 (DISARMED) — ドラッグで動かし 中立/端 をセット",
                            fg="#34d399", bg="#0f172a", padx=6, pady=4)
         cf.pack(fill="x", padx=8, pady=4)
         rr = tk.Frame(cf, bg="#0f172a"); rr.pack(fill="x")
@@ -436,11 +415,16 @@ class Panel:
         self.jog.pack(fill="x")
         self.jog.bind("<ButtonRelease-1>", self.on_jog)
         jr = tk.Frame(cf, bg="#0f172a"); jr.pack(fill="x", pady=2)
-        tk.Button(jr, text="ここを MIN に", command=lambda: self.set_end("smin")).pack(side="left", padx=2)
-        tk.Button(jr, text="MID に", command=lambda: self.set_end("smid")).pack(side="left", padx=2)
-        tk.Button(jr, text="MAX に", command=lambda: self.set_end("smax")).pack(side="left", padx=2)
+        tk.Button(jr, text="ここを 中立(trim) に", command=lambda: self.set_end("smid"),
+                  bg="#7c3aed", fg="white", font=("", 9, "bold")).pack(side="left", padx=2)
+        tk.Button(jr, text="MIN 端", command=lambda: self.set_end("smin")).pack(side="left", padx=2)
+        tk.Button(jr, text="MAX 端", command=lambda: self.set_end("smax")).pack(side="left", padx=2)
         tk.Button(jr, text="反転", command=self.toggle_rev).pack(side="left", padx=6)
         tk.Button(jr, text="ジョグ解除", command=self.jog_off).pack(side="left", padx=2)
+        ur = tk.Frame(cf, bg="#0f172a"); ur.pack(fill="x", pady=2)
+        tk.Button(ur, text="機体から読込", command=self.read_cal).pack(side="left", padx=2)
+        tk.Button(ur, text="💾 保存(flash)", command=lambda: self.send("save"),
+                  bg="#065f46", fg="white").pack(side="left", padx=6)
 
         # 自動最適化
         ob = tk.LabelFrame(root, text="自動距離最適化 (投げるだけ)", fg="#a5b4fc",
@@ -461,7 +445,6 @@ class Panel:
         self.log.pack(fill="both", expand=True, padx=8, pady=6)
 
         self.opt_msg = None
-        self._sync_cal = False
         self._rev = {0: 0, 1: 0, 2: 0}
         self.root.after(150, self._tick)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -511,21 +494,11 @@ class Panel:
     def cmd_disarm(self):
         self.send("disarm")
 
-    # ---- トリム ----
-    def adj_trim(self, ch, delta):
-        self.set_trim(ch, max(-90.0, min(90.0, self.trim_val[ch] + delta)))
-
-    def set_trim(self, ch, value):
-        self.trim_val[ch] = value
-        self.trim_lbls[ch].config(text=f"{value:.1f}")
-        self.send(f"s{ch} {value:.1f}")
-
+    # ---- サーボ設定 (drive-and-set) ----
     def read_cal(self):
         if self.link:
             self.link.request_status()
-            self._sync_cal = True
 
-    # ---- 可動域 (drive-and-set) ----
     def on_jog_ch(self):
         if self.link:
             _, scal, _ = self.link.cal_snapshot()
@@ -538,7 +511,11 @@ class Panel:
 
     def set_end(self, cmd):
         ch = self.jog_ch.get()
-        self.send(f"{cmd} {ch} {int(self.jog.get())}")
+        us = int(self.jog.get())
+        self.send(f"{cmd} {ch} {us}")
+        if cmd == "smid":
+            # 中立 = MID。トリム(deg)を 0 にリセットして MID を真の中立(trim)にする
+            self.send(f"s{ch} 0")
         if self.link:
             self.link.request_status()
 
@@ -583,13 +560,8 @@ class Panel:
                         t["roll"], t["pitch"], t["a"], t["s0"], t["s1"], t["s2"]))
             self.link_lbl.config(text="接続済 · テレメトリOK" if alive else "接続済 · 無信号",
                                  fg="#4ade80" if alive else "#fbbf24")
-            # トリム/較正の表示同期
-            trim, scal, cseq = self.link.cal_snapshot()
-            if self._sync_cal and cseq > 0:
-                for ch in range(3):
-                    self.trim_val[ch] = trim[ch]
-                    self.trim_lbls[ch].config(text=f"{trim[ch]:.1f}")
-                self._sync_cal = False
+            # サーボ較正の現在値を表示
+            _, scal, _ = self.link.cal_snapshot()
             jch = self.jog_ch.get()
             c = scal.get(jch)
             if c:
